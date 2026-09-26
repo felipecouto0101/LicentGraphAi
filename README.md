@@ -97,21 +97,27 @@ cp .env.example .env
 ```
 LicitGraphAi/
 ├── app/
-│   └── rag/             # Componentes RAG implementados
-│       ├── pdf_reader.py
-│       ├── text_chunker.py
-│       ├── node_1_reader_chunker.py
-│       ├── node_2_embeddings.py
-│       ├── node_3_analyzer.py
-│       ├── node_4_document_generator.py
-│       └── langgraph_workflow.py  # Orquestração LangGraph
+│   ├── api/               # API FastAPI
+│   │   ├── main.py       # Endpoints REST
+│   │   └── __init__.py
+│   ├── rag/              # Componentes RAG implementados
+│   │   ├── pdf_reader.py
+│   │   ├── text_chunker.py
+│   │   ├── node_1_reader_chunker.py
+│   │   ├── node_2_embeddings.py
+│   │   ├── node_3_analyzer.py
+│   │   ├── node_4_document_generator.py
+│   │   └── langgraph_workflow.py  # Orquestração LangGraph
+│   └── streamlit_app.py  # Interface web Streamlit
 ├── data/
 │   ├── raw/             # PDFs originais
+│   │   └── uploads/     # Uploads da API
 │   ├── processed/       # Dados processados
 │   └── vector_db/       # ChromaDB
-├── tests/               # Testes (79 testes implementados)
+├── tests/               # Testes (107 testes implementados)
 ├── docs/                # Documentação
 ├── examples/            # Exemplos de uso
+├── start_app.py         # Script para iniciar app completo
 └── requirements.txt
 ```
 
@@ -173,6 +179,29 @@ print(f"Análise: {final_state['analysis']}")
 print(f"Checklist: {final_state['checklist']}")
 ```
 
+### Interface Web (Streamlit + FastAPI)
+
+Para usar a interface web completa:
+
+```bash
+# Inicia FastAPI + Streamlit automaticamente
+python start_app.py
+```
+
+Ou inicie manualmente:
+
+```bash
+# Terminal 1: Inicia FastAPI
+python -m uvicorn app.api.main:app --reload --host 127.0.0.1 --port 8000
+
+# Terminal 2: Inicia Streamlit
+streamlit run app/streamlit_app.py
+```
+
+Acesse:
+- **Streamlit**: http://localhost:8501
+- **API Swagger**: http://127.0.0.1:8000/docs
+
 ### Executar Exemplos
 
 ```bash
@@ -199,7 +228,7 @@ pytest tests/test_node_4_step3.py -v  # Testes do Nó 4 (categorização)
 pytest tests/test_node_4_step4.py -v  # Testes do Nó 4 (checklist)
 pytest tests/test_node_4_step5.py -v  # Testes do Nó 4 (integração)
 pytest tests/test_langgraph.py -v  # Testes do LangGraph
-pytest tests/ -v                # Todos os testes (79 testes)
+pytest tests/ -v                # Todos os testes (107 testes)
 ```
 
 ## Desenvolvimento
