@@ -395,3 +395,177 @@ class Node4DocumentGenerator:
         
         logger.info("Validação de checklist concluída")
         return True
+    
+    def process_from_node3(self, node3_output: dict) -> dict:
+        """
+        Processa saída do Nó 3 para gerar checklist.
+        
+        Args:
+            node3_output: Saída do Nó 3
+            
+        Returns:
+            Dicionário com checklist gerado
+        """
+        logger.info("Processando saída do Nó 3")
+        
+        structured_info = node3_output.get("structured_info", {})
+        documentation = structured_info.get("documentation", [])
+        
+        if not documentation:
+            return {
+                "checklist": {},
+                "resumo": {
+                    "total_documentos": 0,
+                    "obrigatorios": 0,
+                    "opcionais": 0,
+                    "categorias": 0
+                }
+            }
+        
+        # Categoriza documentos
+        categorized = self.categorize_documents(documentation)
+        
+        # Gera checklist
+        checklist = self.generate_complete_checklist(categorized)
+        
+        return checklist
+    
+    def process_complete_analysis(self, node3_analysis: dict) -> dict:
+        """
+        Processa análise completa do Nó 3.
+        
+        Args:
+            node3_analysis: Análise completa do Nó 3
+            
+        Returns:
+            Dicionário com análise completa e checklist
+        """
+        logger.info("Processando análise completa do Nó 3")
+        
+        # Extrai estrutura do Nó 3
+        extracted = self._extract_from_node3_structure(node3_analysis)
+        
+        # Categoriza documentos
+        categorized = self.categorize_documents(extracted["documents"])
+        
+        # Gera checklist
+        checklist = self.generate_complete_checklist(categorized)
+        
+        # Mescla prazos
+        if extracted["deadlines"]:
+            checklist = self.merge_with_deadlines(checklist, extracted["deadlines"])
+        
+        # Gera resumo final
+        summary = self.generate_checklist_summary(checklist["checklist"])
+        
+        return {
+            "checklist": checklist["checklist"],
+            "categorized": categorized,
+            "summary": summary,
+            "deadlines": extracted["deadlines"],
+            "requirements": extracted["requirements"]
+        }
+    
+    def _extract_from_node3_structure(self, node3_structure: dict) -> dict:
+        """
+        Extrai documentos da estrutura do Nó 3.
+        
+        Args:
+            node3_structure: Estrutura do Nó 3
+            
+        Returns:
+            Dicionário com documentos extraídos
+        """
+        documentation = node3_structure.get("documentation", [])
+        deadlines = node3_structure.get("deadlines", [])
+        requirements = node3_structure.get("requirements", [])
+        
+        return {
+            "documents": documentation,
+            "deadlines": deadlines,
+            "requirements": requirements
+        }
+    
+    def merge_with_deadlines(self, checklist: dict, deadlines: List[str]) -> dict:
+        """
+        Mescla prazos ao checklist.
+        
+        Args:
+            checklist: Checklist sem prazos
+            deadlines: Lista de prazos
+            
+        Returns:
+            Checklist com prazos mesclados
+        """
+        # Converte lista de prazos para dicionário documento -> prazo
+        deadline_map = {}
+        for deadline in deadlines:
+            deadline_map[f"Prazo {deadline}"] = deadline
+        
+        # Aplica prazos aos itens
+        for category, data in checklist["checklist"].items():
+            if isinstance(data, dict) and "itens" in data:
+                for item in data["itens"]:
+                    for doc_name, deadline in deadline_map.items():
+                        if doc_name.lower() in item["documento"].lower():
+                            item["prazo"] = deadline
+        
+        return checklist
+    
+    def validate_integration_output(self, output: dict) -> bool:
+        """
+        Valida a saída da integração.
+        
+        Args:
+            output: Dicionário de saída da integração
+            
+        Returns:
+            True se válido, False caso contrário
+        """
+        required_fields = ["checklist", "categorized", "summary"]
+        
+        for field in required_fields:
+            if field not in output:
+                logger.error(f"Campo obrigatório ausente: {field}")
+                return False
+        
+        if "total_documentos" not in output["summary"]:
+            logger.error("Campo total_documentos ausente no resumo")
+            return False
+        
+        logger.info("Validação de integração concluída")
+        return True
+    
+    def generate_final_report(self, checklist: dict) -> dict:
+        """
+        Gera relatório final do checklist.
+        
+        Args:
+            checklist: Checklist gerado
+            
+        Returns:
+            Dicionário com relatório final
+        """
+        logger.info("Gerando relatório final do checklist")
+        
+        total_docs = checklist["resumo"]["total_documentos"]
+        
+        recommendations = []
+        if total_docs > 0:
+            recommendations.append("Verificar todos os documentos obrigatórios")
+            recommendations.append("Organizar documentos por categoria")
+        
+        if total_docs > 5:
+            recommendations.append("Considerar priorizar documentos com prazos mais curtos")
+        
+        priority_actions = []
+        if total_docs > 0:
+            priority_actions.append("Iniciar coleta de documentos imediatamente")
+            priority_actions.append("Verificar validade dos documentos")
+        
+        return {
+            "checklist": checklist["checklist"],
+            "summary": checklist["resumo"],
+            "recommendations": recommendations,
+            "priority_actions": priority_actions
+        }
