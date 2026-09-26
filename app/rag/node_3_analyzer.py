@@ -219,3 +219,160 @@ Responda de forma estruturada e concisa.
                 requirements.append(line)
         
         return requirements
+    
+    def extract_structured_info(self, chunk: Dict) -> Dict:
+        """
+        Extrai informações estruturadas de um chunk.
+        
+        Args:
+            chunk: Chunk com conteúdo e metadados
+            
+        Returns:
+            Dicionário com informações categorizadas
+        """
+        logger.info(f"Extraindo informações estruturadas da seção: {chunk.get('section', 'unknown')}")
+        
+        content = chunk["content"].lower()
+        section = chunk.get("section", "")
+        
+        result = {
+            "technical_requirements": self._extract_technical_requirements(content, section),
+            "deadlines": self._extract_deadlines(content, section),
+            "documentation": self._extract_documentation(content, section),
+            "object_info": self._extract_object_info(content, section),
+            "risk_factors": self._extract_risk_factors(content, section),
+            "section": section
+        }
+        
+        logger.info(f"Informações extraídas: {len(result['technical_requirements'])} técnicos, {len(result['deadlines'])} prazos")
+        return result
+    
+    def validate_structured_output(self, output: Dict) -> bool:
+        """
+        Valida a saída estruturada.
+        
+        Args:
+            output: Dicionário de saída estruturada
+            
+        Returns:
+            True se válido, False caso contrário
+        """
+        required_categories = [
+            "technical_requirements",
+            "deadlines",
+            "documentation",
+            "object_info",
+            "risk_factors"
+        ]
+        
+        for category in required_categories:
+            if category not in output:
+                logger.error(f"Categoria obrigatória ausente: {category}")
+                return False
+        
+        # Verifica tipos
+        list_categories = ["technical_requirements", "deadlines", "documentation", "risk_factors"]
+        for category in list_categories:
+            if not isinstance(output[category], list):
+                logger.error(f"Categoria {category} deve ser uma lista")
+                return False
+        
+        # object_info pode ser dicionário
+        if not isinstance(output["object_info"], dict):
+            logger.error("object_info deve ser um dicionário")
+            return False
+        
+        logger.info("Validação estruturada concluída")
+        return True
+    
+    def _extract_technical_requirements(self, content: str, section: str) -> List[str]:
+        """Extrai requisitos técnicos do conteúdo."""
+        requirements = []
+        
+        # Palavras-chave técnicas comuns em editais
+        tech_keywords = [
+            "processador", "cpu", "memória", "ram", "armazenamento", "ssd", "hdd",
+            "monitor", "placa de vídeo", "sistema operacional", "software",
+            "especificação técnica", "norma", "abnt", "iso", "certificação"
+        ]
+        
+        for keyword in tech_keywords:
+            if keyword in content:
+                # Encontra a frase completa contendo a palavra-chave
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if keyword in sentence:
+                        requirements.append(sentence.strip())
+        
+        return requirements
+    
+    def _extract_deadlines(self, content: str, section: str) -> List[str]:
+        """Extrai prazos e deadlines do conteúdo."""
+        deadlines = []
+        
+        deadline_keywords = ["prazo", "deadline", "entrega", "vigência", "dia", "mês", "ano"]
+        
+        for keyword in deadline_keywords:
+            if keyword in content:
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if keyword in sentence:
+                        deadlines.append(sentence.strip())
+        
+        return deadlines
+    
+    def _extract_documentation(self, content: str, section: str) -> List[str]:
+        """Extrai documentação exigida do conteúdo."""
+        documentation = []
+        
+        doc_keywords = ["document", "certidão", "licença", "registro", "alvará", "cnh", "rg", "cpf", "cnpj"]
+        
+        for keyword in doc_keywords:
+            if keyword in content:
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if keyword in sentence:
+                        documentation.append(sentence.strip())
+        
+        return documentation
+    
+    def _extract_object_info(self, content: str, section: str) -> Dict:
+        """Extrai informações do objeto/bem."""
+        info = {
+            "description": "",
+            "quantity": None,
+            "unit": None
+        }
+        
+        # Tenta extrair quantidade
+        import re
+        quantity_pattern = r'(\d+)\s*(unidade|computadores?|itens?|equipamentos?|dispositivos?)'
+        match = re.search(quantity_pattern, content)
+        if match:
+            info["quantity"] = int(match.group(1))
+            info["unit"] = match.group(2)
+        
+        # Tenta extrair descrição do objeto
+        if "objeto" in content or "aquisição" in content:
+            sentences = content.split('.')
+            for sentence in sentences:
+                if "objeto" in sentence or "aquisição" in sentence:
+                    info["description"] = sentence.strip()
+                    break
+        
+        return info
+    
+    def _extract_risk_factors(self, content: str, section: str) -> List[str]:
+        """Extrai fatores de risco do conteúdo."""
+        risks = []
+        
+        risk_keywords = ["risco", "crítico", "urgente", "complexo", "difícil", "curto prazo", "multa"]
+        
+        for keyword in risk_keywords:
+            if keyword in content:
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if keyword in sentence:
+                        risks.append(sentence.strip())
+        
+        return risks
