@@ -577,3 +577,171 @@ Responda de forma estruturada e concisa.
             grouped[risk].append(point)
         
         return grouped
+    
+    def process_from_node2(self, chunks: List[Dict]) -> Dict:
+        """
+        Processa chunks vindos do Nó 2.
+        
+        Args:
+            chunks: Lista de chunks do Nó 2
+            
+        Returns:
+            Dicionário com análise completa
+        """
+        logger.info(f"Processando {len(chunks)} chunks do Nó 2")
+        
+        if not chunks:
+            return {
+                "total_chunks_processed": 0,
+                "structured_analysis": {},
+                "critical_analysis": {}
+            }
+        
+        # Análise estruturada
+        structured_analysis = {
+            chunk.get("metadata", {}).get("chunk_id", i): self.extract_structured_info(chunk)
+            for i, chunk in enumerate(chunks)
+        }
+        
+        # Análise crítica
+        critical_analysis = {
+            chunk.get("metadata", {}).get("chunk_id", i): self.identify_critical_points(chunk)
+            for i, chunk in enumerate(chunks)
+        }
+        
+        return {
+            "total_chunks_processed": len(chunks),
+            "structured_analysis": structured_analysis,
+            "critical_analysis": critical_analysis
+        }
+    
+    def process_complete_analysis(self, node2_output: Dict) -> Dict:
+        """
+        Processa análise completa usando saída do Nó 2.
+        
+        Args:
+            node2_output: Saída do Nó 2 com embeddings
+            
+        Returns:
+            Dicionário com análise completa integrada
+        """
+        logger.info("Iniciando análise completa integrada")
+        
+        chunks = node2_output.get("chunks_with_embeddings", [])
+        
+        # Processa análise
+        analysis = self.process_from_node2(chunks)
+        
+        # Combina análises
+        combined = self.combine_analyses(chunks)
+        
+        # Gera resumo executivo
+        summary = self.generate_executive_summary(combined)
+        
+        return {
+            "summary": summary,
+            "technical_analysis": analysis["structured_analysis"],
+            "risk_assessment": analysis["critical_analysis"],
+            "recommendations": combined["priority_recommendations"],
+            "total_chunks_processed": analysis["total_chunks_processed"]
+        }
+    
+    def combine_analyses(self, chunks: List[Dict]) -> Dict:
+        """
+        Combina análise estruturada e crítica.
+        
+        Args:
+            chunks: Lista de chunks
+            
+        Returns:
+            Dicionário com análises combinadas
+        """
+        logger.info("Combinando análises estruturada e crítica")
+        
+        all_structured = []
+        all_critical = []
+        all_risk_levels = []
+        
+        for chunk in chunks:
+            structured = self.extract_structured_info(chunk)
+            critical = self.identify_critical_points(chunk)
+            
+            all_structured.append(structured)
+            all_critical.append(critical)
+            all_risk_levels.append(critical["risk_level"])
+        
+        # Determina nível de risco combinado
+        combined_risk = self._calculate_overall_risk(all_risk_levels)
+        
+        # Recomendações prioritárias
+        priority_recommendations = []
+        for critical in all_critical:
+            priority_recommendations.extend(critical["recommendations"])
+        
+        return {
+            "structured_info": all_structured,
+            "critical_info": all_critical,
+            "combined_risk_level": combined_risk,
+            "priority_recommendations": list(set(priority_recommendations))  # Remove duplicatas
+        }
+    
+    def generate_executive_summary(self, analysis_result: Dict) -> Dict:
+        """
+        Gera resumo executivo da análise.
+        
+        Args:
+            analysis_result: Resultado da análise combinada
+            
+        Returns:
+            Dicionário com resumo executivo
+        """
+        logger.info("Gerando resumo executivo")
+        
+        structured = analysis_result.get("structured_info", [])
+        critical = analysis_result.get("critical_info", [])
+        
+        # Extrai principais descobertas
+        key_findings = []
+        for struct in structured:
+            if struct.get("technical_requirements"):
+                key_findings.extend(struct["technical_requirements"][:2])
+            if struct.get("deadlines"):
+                key_findings.extend(struct["deadlines"][:1])
+        
+        # Resumo de risco
+        risk_summary = f"Nível de risco geral: {analysis_result.get('combined_risk_level', 'BAIXO')}"
+        
+        # Próximos passos
+        next_steps = analysis_result.get("priority_recommendations", [])
+        
+        return {
+            "overview": f"Análise de {len(structured)} chunks processados",
+            "key_findings": key_findings[:5],  # Limita a 5 descobertas principais
+            "risk_summary": risk_summary,
+            "next_steps": next_steps[:3]  # Limita a 3 próximos passos
+        }
+    
+    def validate_integration_output(self, output: Dict) -> bool:
+        """
+        Valida a saída da integração.
+        
+        Args:
+            output: Dicionário de saída da integração
+            
+        Returns:
+            True se válido, False caso contrário
+        """
+        required_fields = ["total_chunks_processed", "structured_analysis", "critical_analysis"]
+        
+        for field in required_fields:
+            if field not in output:
+                logger.error(f"Campo obrigatório ausente: {field}")
+                return False
+        
+        # Verifica se total_chunks_processed é inteiro
+        if not isinstance(output["total_chunks_processed"], int):
+            logger.error("total_chunks_processed deve ser um inteiro")
+            return False
+        
+        logger.info("Validação de integração concluída")
+        return True
