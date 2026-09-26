@@ -97,6 +97,7 @@ class TestNode4DocumentCategorization:
             "tecnica": ["ISO 9001"],
             "fiscal": ["Certidão Fiscal"],
             "juridica": ["Contrato Social"],
+            "trabalhista": [],
             "outros": []
         }
         

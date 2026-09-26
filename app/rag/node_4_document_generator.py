@@ -255,7 +255,7 @@ class Node4DocumentGenerator:
         Returns:
             True se válido, False caso contrário
         """
-        required_categories = ["habilitacao", "tecnica", "fiscal", "juridica", "outros"]
+        required_categories = ["habilitacao", "tecnica", "fiscal", "juridica", "trabalhista", "outros"]
         
         for category in required_categories:
             if category not in output:
@@ -263,4 +263,135 @@ class Node4DocumentGenerator:
                 return False
         
         logger.info("Validação de categorização concluída")
+        return True
+    
+    def generate_checklist_item(self, document: str, requirements: List[str] = None) -> dict:
+        """
+        Gera um item de checklist.
+        
+        Args:
+            document: Nome do documento
+            requirements: Lista de requisitos
+            
+        Returns:
+            Dicionário com item do checklist
+        """
+        return {
+            "documento": document,
+            "obrigatorio": True,
+            "status": "pendente",
+            "observacoes": ", ".join(requirements) if requirements else "",
+            "prazo": None
+        }
+    
+    def generate_checklist_category(self, documents: List[str], category: str) -> dict:
+        """
+        Gera checklist para uma categoria.
+        
+        Args:
+            documents: Lista de documentos
+            category: Nome da categoria
+            
+        Returns:
+            Dicionário com checklist da categoria
+        """
+        items = [self.generate_checklist_item(doc) for doc in documents]
+        
+        return {
+            "categoria": category,
+            "itens": items,
+            "total": len(items)
+        }
+    
+    def generate_complete_checklist(self, categorized_docs: dict) -> dict:
+        """
+        Gera checklist completo estruturado.
+        
+        Args:
+            categorized_docs: Dicionário com documentos categorizados
+            
+        Returns:
+            Dicionário com checklist completo
+        """
+        logger.info("Gerando checklist completo")
+        
+        checklist = {}
+        
+        for category, documents in categorized_docs.items():
+            if documents:  # Só adiciona categorias com documentos
+                checklist[category] = self.generate_checklist_category(documents, category)
+        
+        summary = self.generate_checklist_summary(checklist)
+        
+        return {
+            "checklist": checklist,
+            "resumo": summary
+        }
+    
+    def add_deadline_to_item(self, item: dict, deadline: str) -> dict:
+        """
+        Adiciona prazo a um item do checklist.
+        
+        Args:
+            item: Item do checklist
+            deadline: Prazo
+            
+        Returns:
+            Item atualizado com prazo
+        """
+        item["prazo"] = deadline
+        return item
+    
+    def generate_checklist_summary(self, checklist: dict) -> dict:
+        """
+        Gera resumo do checklist.
+        
+        Args:
+            checklist: Dicionário com checklist
+            
+        Returns:
+            Dicionário com resumo
+        """
+        total_documentos = 0
+        obrigatorios = 0
+        opcionais = 0
+        
+        for category, data in checklist.items():
+            if isinstance(data, dict) and "itens" in data:
+                total_documentos += len(data["itens"])
+                for item in data["itens"]:
+                    if item.get("obrigatorio", False):
+                        obrigatorios += 1
+                    else:
+                        opcionais += 1
+        
+        return {
+            "total_documentos": total_documentos,
+            "obrigatorios": obrigatorios,
+            "opcionais": opcionais,
+            "categorias": len(checklist)
+        }
+    
+    def validate_checklist(self, output: dict) -> bool:
+        """
+        Valida o checklist.
+        
+        Args:
+            output: Dicionário de saída do checklist
+            
+        Returns:
+            True se válido, False caso contrário
+        """
+        required_fields = ["checklist", "resumo"]
+        
+        for field in required_fields:
+            if field not in output:
+                logger.error(f"Campo obrigatório ausente: {field}")
+                return False
+        
+        if "total_documentos" not in output["resumo"]:
+            logger.error("Campo total_documentos ausente no resumo")
+            return False
+        
+        logger.info("Validação de checklist concluída")
         return True
