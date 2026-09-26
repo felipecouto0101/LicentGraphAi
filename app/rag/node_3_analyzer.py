@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from typing import Optional, Dict, List
 import os
 import logging
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -345,7 +346,6 @@ Responda de forma estruturada e concisa.
         }
         
         # Tenta extrair quantidade
-        import re
         quantity_pattern = r'(\d+)\s*(unidade|computadores?|itens?|equipamentos?|dispositivos?)'
         match = re.search(quantity_pattern, content)
         if match:
@@ -376,3 +376,204 @@ Responda de forma estruturada e concisa.
                         risks.append(sentence.strip())
         
         return risks
+    
+    def identify_critical_points(self, chunk: Dict) -> Dict:
+        """
+        Identifica pontos críticos no chunk.
+        
+        Args:
+            chunk: Chunk com conteúdo e metadados
+            
+        Returns:
+            Dicionário com pontos críticos e nível de risco
+        """
+        logger.info(f"Identificando pontos críticos na seção: {chunk.get('section', 'unknown')}")
+        
+        content = chunk["content"].lower()
+        section = chunk.get("section", "")
+        
+        if not content.strip():
+            return {
+                "critical_points": [],
+                "risk_level": "BAIXO",
+                "recommendations": [],
+                "ambiguities": []
+            }
+        
+        # Identifica pontos críticos
+        critical_points = self._extract_critical_keywords(content)
+        
+        # Classifica nível de risco
+        risk_level = self._classify_risk_level(content, critical_points)
+        
+        # Gera recomendações
+        recommendations = self._generate_recommendations(content, critical_points, risk_level)
+        
+        # Identifica ambiguidades
+        ambiguities = self._identify_ambiguities(content)
+        
+        return {
+            "critical_points": critical_points,
+            "risk_level": risk_level,
+            "recommendations": recommendations,
+            "ambiguities": ambiguities,
+            "section": section
+        }
+    
+    def summarize_critical_points(self, chunks: List[Dict]) -> Dict:
+        """
+        Resume pontos críticos de múltiplos chunks.
+        
+        Args:
+            chunks: Lista de chunks
+            
+        Returns:
+            Dicionário com resumo crítico
+        """
+        logger.info(f"Resumindo pontos críticos de {len(chunks)} chunks")
+        
+        all_critical_points = []
+        all_risk_levels = []
+        
+        for chunk in chunks:
+            analysis = self.identify_critical_points(chunk)
+            all_critical_points.extend(analysis["critical_points"])
+            all_risk_levels.append(analysis["risk_level"])
+        
+        # Determina nível de risco geral
+        overall_risk = self._calculate_overall_risk(all_risk_levels)
+        
+        # Ações prioritárias
+        priority_actions = self._generate_priority_actions(all_critical_points, overall_risk)
+        
+        return {
+            "total_critical_points": len(all_critical_points),
+            "overall_risk_level": overall_risk,
+            "priority_actions": priority_actions,
+            "critical_points_by_risk": self._group_by_risk(all_critical_points, all_risk_levels)
+        }
+    
+    def validate_critical_analysis(self, output: Dict) -> bool:
+        """
+        Valida a análise crítica.
+        
+        Args:
+            output: Dicionário de saída da análise crítica
+            
+        Returns:
+            True se válido, False caso contrário
+        """
+        required_fields = ["critical_points", "risk_level", "recommendations"]
+        
+        for field in required_fields:
+            if field not in output:
+                logger.error(f"Campo obrigatório ausente: {field}")
+                return False
+        
+        # Verifica se risk_level é válido
+        valid_risk_levels = ["ALTO", "MEDIO", "BAIXO"]
+        if output["risk_level"] not in valid_risk_levels:
+            logger.error(f"Nível de risco inválido: {output['risk_level']}")
+            return False
+        
+        logger.info("Validação crítica concluída")
+        return True
+    
+    def _extract_critical_keywords(self, content: str) -> List[str]:
+        """Extrai palavras-chave críticas do conteúdo."""
+        critical_keywords = [
+            "impossível", "inviável", "curto prazo", "multa", "penalidade",
+            "severo", "obrigatório", "exclusivo", "único", "imediato",
+            "urgente", "complexo", "difícil", "risco", "perigo"
+        ]
+        
+        points = []
+        for keyword in critical_keywords:
+            if keyword in content:
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if keyword in sentence:
+                        points.append(sentence.strip())
+        
+        return points
+    
+    def _classify_risk_level(self, content: str, critical_points: List[str]) -> str:
+        """Classifica o nível de risco."""
+        if len(critical_points) >= 3:
+            return "ALTO"
+        elif len(critical_points) >= 1:
+            return "MEDIO"
+        else:
+            return "BAIXO"
+    
+    def _generate_recommendations(self, content: str, critical_points: List[str], risk_level: str) -> List[str]:
+        """Gera recomendações baseadas nos pontos críticos."""
+        recommendations = []
+        
+        if "prazo" in content:
+            recommendations.append("Verificar viabilidade do prazo estabelecido")
+        
+        if "multa" in content or "penalidade" in content:
+            recommendations.append("Avaliar impacto financeiro das penalidades")
+        
+        if "obrigatório" in content or "exclusivo" in content:
+            recommendations.append("Confirmar capacidade de atender requisitos obrigatórios")
+        
+        if risk_level == "ALTO":
+            recommendations.append("Recomendada revisão detalhada do edital")
+        
+        return recommendations
+    
+    def _identify_ambiguities(self, content: str) -> List[str]:
+        """Identifica ambiguidades no conteúdo."""
+        ambiguity_keywords = [
+            "a ser definido", "posteriormente", "conforme", "apropriado",
+            "adequado", "suficiente", "necessário", "de acordo com"
+        ]
+        
+        ambiguities = []
+        for keyword in ambiguity_keywords:
+            if keyword in content:
+                sentences = content.split('.')
+                for sentence in sentences:
+                    if keyword in sentence:
+                        ambiguities.append(sentence.strip())
+        
+        return ambiguities
+    
+    def _calculate_overall_risk(self, risk_levels: List[str]) -> str:
+        """Calcula nível de risco geral."""
+        if "ALTO" in risk_levels:
+            return "ALTO"
+        elif "MEDIO" in risk_levels:
+            return "MEDIO"
+        else:
+            return "BAIXO"
+    
+    def _generate_priority_actions(self, critical_points: List[str], overall_risk: str) -> List[str]:
+        """Gera ações prioritárias."""
+        actions = []
+        
+        if overall_risk == "ALTO":
+            actions.append("Reunião imediata com equipe técnica")
+            actions.append("Análise detalhada de capacidade")
+        elif overall_risk == "MEDIO":
+            actions.append("Revisão de requisitos")
+            actions.append("Planejamento de contingência")
+        else:
+            actions.append("Acompanhamento padrão do processo")
+        
+        return actions
+    
+    def _group_by_risk(self, critical_points: List[str], risk_levels: List[str]) -> Dict:
+        """Agrupa pontos críticos por nível de risco."""
+        grouped = {
+            "ALTO": [],
+            "MEDIO": [],
+            "BAIXO": []
+        }
+        
+        for point, risk in zip(critical_points, risk_levels):
+            grouped[risk].append(point)
+        
+        return grouped
