@@ -191,3 +191,76 @@ class Node4DocumentGenerator:
         
         logger.info("Validação de extração de documentos concluída")
         return True
+    
+    def categorize_document(self, document: str) -> str:
+        """
+        Categoriza um documento em uma categoria específica.
+        
+        Args:
+            document: Nome do documento
+            
+        Returns:
+            Categoria do documento
+        """
+        document_lower = document.lower()
+        
+        # Categorias de documentos
+        category_keywords = {
+            "habilitacao": ["cnpj", "cpf", "rg", "cnh", "inscrição estadual"],
+            "tecnica": ["iso", "atestado", "certificação", "técnica", "qualidade"],
+            "fiscal": ["fiscal", "tributária", "imposto", "balanço", "demonstrativo"],
+            "juridica": ["contrato social", "estatuto", "ata", "procuração"],
+            "trabalhista": ["clt", "fgts", "inss", "trabalhista"]
+        }
+        
+        for category, keywords in category_keywords.items():
+            for keyword in keywords:
+                if keyword in document_lower:
+                    return category
+        
+        return "outros"
+    
+    def categorize_documents(self, documents: List[str]) -> dict:
+        """
+        Categoriza uma lista de documentos.
+        
+        Args:
+            documents: Lista de documentos
+            
+        Returns:
+            Dicionário com documentos organizados por categoria
+        """
+        categories = {
+            "habilitacao": [],
+            "tecnica": [],
+            "fiscal": [],
+            "juridica": [],
+            "trabalhista": [],
+            "outros": []
+        }
+        
+        for document in documents:
+            category = self.categorize_document(document)
+            categories[category].append(document)
+        
+        return categories
+    
+    def validate_categorization(self, output: dict) -> bool:
+        """
+        Valida a categorização de documentos.
+        
+        Args:
+            output: Dicionário de saída da categorização
+            
+        Returns:
+            True se válido, False caso contrário
+        """
+        required_categories = ["habilitacao", "tecnica", "fiscal", "juridica", "outros"]
+        
+        for category in required_categories:
+            if category not in output:
+                logger.error(f"Categoria obrigatória ausente: {category}")
+                return False
+        
+        logger.info("Validação de categorização concluída")
+        return True
