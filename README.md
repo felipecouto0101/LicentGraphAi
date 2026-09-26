@@ -13,6 +13,7 @@ Sistema inteligente para análise automática de editais de licitação pública
 - **PyPDF2** - Backup/complemento para PDF
 
 ### Inteligência Artificial
+- **Groq API** + **OpenAI GPT-OSS-120b** - Modelo de linguagem gratuito
 - **sentence-transformers** - Modelo de embeddings gratuito (all-MiniLM-L6-v2)
 - **ChromaDB** - Banco de dados vetorial para RAG
 
@@ -37,8 +38,14 @@ Sistema inteligente para análise automática de editais de licitação pública
    - Suporta busca semântica
    - Processamento em batch para performance
 
+3. **Nó 3: Análise de Requisitos com IA** ✅
+   - Analisa requisitos usando Groq API + OpenAI GPT-OSS-120b
+   - Extrai informações estruturadas (técnicos, prazos, documentação, objeto, riscos)
+   - Identifica pontos críticos e classifica riscos (ALTO/MÉDIO/BAIXO)
+   - Gera recomendações e resumo executivo
+   - Integração completa com Nó 2
+
 ### Próximos Nós (Pendentes)
-- Nó 3: Análise de Requisitos (Groq + Llama 3.1)
 - Nó 4: Comparação com Perfil da Empresa
 - Nó 5: Geração de Relatório de Riscos
 
@@ -63,6 +70,14 @@ venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 ```
 
+4. Configure as variáveis de ambiente:
+```bash
+cp .env.example .env
+# Edite .env com sua chave da API Groq (opcional para desenvolvimento)
+```
+
+5. Obtenha sua chave da API Groq em: https://console.groq.com/ (opcional)
+
 ## Estrutura do Projeto
 
 ```
@@ -72,12 +87,13 @@ LicitGraphAi/
 │       ├── pdf_reader.py
 │       ├── text_chunker.py
 │       ├── node_1_reader_chunker.py
-│       └── node_2_embeddings.py
+│       ├── node_2_embeddings.py
+│       └── node_3_analyzer.py
 ├── data/
 │   ├── raw/             # PDFs originais
 │   ├── processed/       # Dados processados
 │   └── vector_db/       # ChromaDB
-├── tests/               # Testes (28 testes implementados)
+├── tests/               # Testes (35 testes implementados)
 ├── docs/                # Documentação
 ├── examples/            # Exemplos de uso
 └── requirements.txt
@@ -104,11 +120,24 @@ result = node2.process_chunks(chunks, persist_directory="./data/vector_db")
 print(f"Embeddings gerados: {result['total_embeddings']}")
 ```
 
+### Exemplo de Análise com IA (Nó 3)
+
+```python
+from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+node3 = Node3RequirementAnalyzer(api_key="sua_chave_groq", mock_mode=False)
+result = node3.process_from_node2(chunks)
+print(f"Pontos críticos: {result['critical_analysis']}")
+print(f"Nível de risco: {result['overall_risk_level']}")
+```
+
 ### Executar Exemplos
 
 ```bash
 python examples/example_node_1.py
 python examples/example_node_1_2_integration.py
+python examples/example_node_3_env.py
+python examples/test_groq_api.py
 ```
 
 ### Executar Testes
@@ -116,6 +145,11 @@ python examples/example_node_1_2_integration.py
 ```bash
 pytest tests/test_node_1.py -v  # Testes do Nó 1
 pytest tests/test_node_2.py -v  # Testes do Nó 2
+pytest tests/test_node_3_step1.py -v  # Testes do Nó 3 (configuração)
+pytest tests/test_node_3_step2.py -v  # Testes do Nó 3 (análise básica)
+pytest tests/test_node_3_step3.py -v  # Testes do Nó 3 (extração estruturada)
+pytest tests/test_node_3_step4.py -v  # Testes do Nó 3 (pontos críticos)
+pytest tests/test_node_3_step5.py -v  # Testes do Nó 3 (integração)
 pytest tests/ -v                # Todos os testes
 ```
 
@@ -136,3 +170,5 @@ ruff check app/
 
 - [Documentação do Nó 1](docs/node_1_documentation.md)
 - [Exemplos de Integração](examples/example_node_1_2_integration.py)
+- [Exemplos do Nó 3](examples/example_node_3_env.py)
+- [Teste de API Groq](examples/test_groq_api.py)
