@@ -20,7 +20,7 @@ class TestNode3GroqConfig:
         node = Node3RequirementAnalyzer(api_key="test_key", mock_mode=True)
         
         assert node.api_key == "test_key"
-        assert node.model_name == "llama-3.3-70b-versatile"
+        assert node.model_name == "openai/gpt-oss-120b"
         assert node.mock_mode is True
     
     def test_init_with_env_variable(self):
@@ -78,7 +78,7 @@ class TestNode3GroqConfig:
         
         node = Node3RequirementAnalyzer(api_key="test_key", mock_mode=True)
         
-        assert node.model_name == "llama-3.3-70b-versatile"
+        assert node.model_name == "openai/gpt-oss-120b"
         assert node.temperature == 0.7
         assert node.max_tokens == 2000
     

@@ -57,7 +57,9 @@ def test_groq_api_connection():
         
         print(f"\n[OK] Análise realizada com sucesso")
         print(f"  Requisitos extraídos: {len(result['requirements'])}")
-        print(f"  Análise: {result['analysis'][:150]}...")
+        # Trata encoding para Windows
+        analysis_text = result['analysis'].encode('ascii', 'ignore').decode('ascii')
+        print(f"  Análise: {analysis_text[:150]}...")
         
         if mock_mode:
             print(f"\n[INFO] Testado em modo mock (sem LLM real)")
