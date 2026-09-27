@@ -209,7 +209,7 @@ def main():
                 st.error("❌ Não foi possível obter o status do sistema")
 
         except requests.exceptions.ConnectionError:
-            st.warning("⚠️ API não está respondendo em `http://127.0.0.1:8000`.")
+            st.warning("⚠️ API não está respondendo em `http://127.0.0.1:8002`.")
             st.info(
                 "A API pode estar ainda inicializando (leva ~25s no primeiro start). "
                 "Clique em **Atualizar Status** após alguns instantes."
@@ -248,7 +248,7 @@ def main():
         
         1. Certifique-se de que a API FastAPI está rodando:
            ```bash
-           python -m uvicorn app.api.main:app --reload --host 127.0.0.1 --port 8000
+           python -m uvicorn app.api.main:app --reload --host 127.0.0.1 --port 8002
            ```
         
         2. Execute o Streamlit:
