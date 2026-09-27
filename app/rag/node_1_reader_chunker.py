@@ -67,50 +67,51 @@ class Node1ReaderChunker:
             f"Texto extraído: {len(full_text)} caracteres, {page_count} páginas"
         )
 
-        # Fragmenta o texto
-        logger.info("Fragmentando texto...")
-        if self.chunk_by_sections:
-            chunks_by_section = self.text_chunker.chunk_by_sections(full_text)
-            all_chunks = []
-            for section, section_chunks in chunks_by_section.items():
-                for chunk in section_chunks:
-                    all_chunks.append(
-                        {
-                            "content": chunk,
+        # Fragmenta cada página separadamente para preservar a origem de cada
+        # trecho. O número é o índice físico do PDF (1-based), não o número impresso.
+        logger.info("Fragmentando texto por página...")
+        pages = self.pdf_reader.pages_text or [full_text]
+        all_chunks = []
+        chunks_by_section = {
+            "bens": [], "prazos": [], "exigencias_tecnicas": [],
+            "documentacao": [], "outros": [],
+        }
+        for page_number, page_text in enumerate(pages, 1):
+            if not page_text.strip():
+                continue
+            if self.chunk_by_sections:
+                page_sections = self.text_chunker.chunk_by_sections(page_text)
+                for section, section_chunks in page_sections.items():
+                    chunks_by_section[section].extend(section_chunks)
+                    for content in section_chunks:
+                        all_chunks.append({
+                            "content": content,
                             "section": section,
-                            "metadata": self.text_chunker.get_chunk_metadata(
-                                chunk,
-                                len(all_chunks),
-                                -1,  # -1 porque ainda não sabemos o total
-                            ),
-                        }
-                    )
+                            "metadata": {
+                                **self.text_chunker.get_chunk_metadata(content, len(all_chunks), -1),
+                                "page": page_number,
+                            },
+                        })
+            else:
+                for chunk in self.text_chunker.create_document_chunks(
+                    page_text, {**(metadata or {}), "page": page_number}
+                ):
+                    chunk["metadata"]["chunk_id"] = len(all_chunks)
+                    all_chunks.append(chunk)
 
-            # Atualiza o total de chunks nos metadados
-            total_chunks = len(all_chunks)
-            for chunk in all_chunks:
-                chunk["metadata"]["total_chunks"] = total_chunks
+        for chunk in all_chunks:
+            chunk["metadata"]["total_chunks"] = len(all_chunks)
 
-            result = {
-                "full_text": full_text,
-                "page_count": page_count,
-                "chunks": all_chunks,
-                "chunks_by_section": chunks_by_section,
-                "total_chunks": total_chunks,
-                "processing_method": "by_sections",
-                "metadata": metadata or {},
-            }
-        else:
-            chunks = self.text_chunker.create_document_chunks(full_text, metadata)
-
-            result = {
-                "full_text": full_text,
-                "page_count": page_count,
-                "chunks": chunks,
-                "total_chunks": len(chunks),
-                "processing_method": "standard",
-                "metadata": metadata or {},
-            }
+        result = {
+            "full_text": full_text,
+            "page_count": page_count,
+            "chunks": all_chunks,
+            "total_chunks": len(all_chunks),
+            "processing_method": "by_sections" if self.chunk_by_sections else "standard",
+            "metadata": metadata or {},
+        }
+        if self.chunk_by_sections:
+            result["chunks_by_section"] = chunks_by_section
 
         logger.info(f"Processamento concluído: {result['total_chunks']} chunks gerados")
         return result
