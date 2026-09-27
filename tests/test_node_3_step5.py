@@ -64,6 +64,48 @@ class TestNode3IntegrationWithNode2:
         assert "DOCUMENTO_PRIVADO_QUE_NAO_DEVE_ENTRAR" not in captured[0]
         assert report["requisitos"] == "A seleção usa menor preço."
 
+    def test_full_chunk_retrieval_and_page_provenance(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        chunk = {"content": "Início " + ("x" * 700) + " SENTINELA_FIM",
+                 "section": "prazos", "metadata": {"chunk_id": 2, "page": 3}}
+        captured = []
+        data = {
+            "objeto": "", "documentos": [], "requisitos_participacao": [],
+            "prazos": ["30 dias"], "custos": [], "selecao": [], "entregas": [],
+            "eliminacao": [], "riscos": [], "nivel_risco": "BAIXO",
+        }
+        def invoke(messages, *args):
+            captured.append(messages[-1].content)
+            return SimpleNamespace(content=json.dumps(data))
+        monkeypatch.setattr(analyzer, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(analyzer, "_retrieve_rag_chunks",
+                            lambda **kwargs: {"prazos": [chunk]})
+        monkeypatch.setattr(analyzer, "_synthesize_explanatory_report",
+                            lambda agg, refs: {"resumo": "Prazo [p. 3].",
+                                               "requisitos": "Sem requisito.",
+                                               "coverage": {}})
+
+        result = analyzer._process_with_rag_llm([chunk])
+        assert "SENTINELA_FIM" in captured[0]
+        assert result["rag_sources"]["prazos"][0]["page"] == 3
+        assert result["explanatory_report"]["resumo"] == "Prazo [p. 3]."
+
+    def test_failed_batch_cannot_publish_success(self, monkeypatch):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        def fail(messages, *args):
+            raise RuntimeError("limite de API")
+        monkeypatch.setattr(analyzer, "_invoke_with_rotation", fail)
+        with pytest.raises(RuntimeError, match="Análise incompleta"):
+            analyzer._process_with_rag_llm([
+                {"content": "Prazo: 30 dias", "metadata": {"page": 1}}
+            ])
+
     def test_real_mode_dispatches_to_unified_llm(self, monkeypatch):
         """O fluxo real usa a passagem única e preserva a saída para o nó 4."""
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
