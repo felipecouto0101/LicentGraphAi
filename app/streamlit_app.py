@@ -281,6 +281,7 @@ def display_results(result):
     llm_analysis  = analysis.get("llm_analysis")  # None em mock mode
     narrative     = analysis.get("explanatory_report") or {}
     narrative_error = analysis.get("explanatory_error")
+    rag_sources = analysis.get("rag_sources") or {}
     checklist_data = result_data.get("checklist") or {}
     resumo        = checklist_data.get("resumo", {})
     checklist     = checklist_data.get("checklist", {})
@@ -334,6 +335,19 @@ def display_results(result):
                 "Não foi possível redigir o texto explicativo. "
                 "Os itens extraídos estão disponíveis nas demais abas."
             )
+        if rag_sources:
+            with st.expander("📖 Trechos do PDF para conferência", expanded=False):
+                st.caption(
+                    "Páginas físicas do arquivo PDF. Estes trechos ajudam a conferir "
+                    "o relatório; revise o edital original antes de confiar em uma conclusão."
+                )
+                for topic, sources in rag_sources.items():
+                    if sources:
+                        st.markdown(f"**{topic.replace('_', ' ').capitalize()}**")
+                        for source in sources:
+                            page = source.get("page")
+                            label = f"Página {page}" if page is not None else "Página desconhecida"
+                            st.write(f"{label}, trecho {source.get('chunk_id', '?')}: {source.get('excerpt', '')}")
         chunks_count     = result_data.get("chunks_count", 0)
         embeddings_count = (result_data.get("embeddings") or {}).get("total_embeddings", 0)
         docs_count       = resumo.get("total_documentos", 0)
@@ -422,6 +436,14 @@ def display_results(result):
                         with st.expander(f"Ver {len(detalhes)} itens extraídos", expanded=False):
                             for item in detalhes:
                                 st.write(f"• {item}")
+
+                    sources = rag_sources.get(key, [])
+                    if sources:
+                        with st.expander("Trechos do PDF relacionados", expanded=False):
+                            for source in sources:
+                                page = source.get("page")
+                                label = f"Página {page}" if page is not None else "Página desconhecida"
+                                st.write(f"{label}: {source.get('excerpt', '')}")
 
                     obs = ans.get("observacao", "")
                     if obs:
