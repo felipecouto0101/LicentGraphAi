@@ -1066,6 +1066,75 @@ Regras:
 - Seja conciso: cada item em no maximo 15 palavras.
 """
 
+    @staticmethod
+    def _report_context(agg: dict, limit_per_topic: int = 12) -> tuple[str, dict]:
+        """Amostra distribuída dos itens extraídos, com cobertura explícita."""
+        import json
+
+        topics = {
+            "participacao": agg["requisitos_participacao"],
+            "criterios_tecnicos_e_selecao": agg["selecao"],
+            "prazos": agg["prazos"],
+            "custos": agg["custos"],
+            "entregas": agg["entregas"],
+            "eliminacao": agg["eliminacao"],
+            "riscos": agg["riscos"],
+        }
+        coverage = {}
+        excerpts = {}
+        for topic, items in topics.items():
+            count = min(len(items), limit_per_topic)
+            if count == len(items):
+                selected = items
+            elif count == 1:
+                selected = [items[0]]
+            else:
+                positions = [round(i * (len(items) - 1) / (count - 1)) for i in range(count)]
+                selected = [items[pos] for pos in positions]
+            excerpts[topic] = selected
+            coverage[topic] = {"included": count, "total": len(items)}
+
+        context = json.dumps(
+            {"objeto": agg["objeto"], "nivel_risco": agg["nivel_risco"], "itens": excerpts},
+            ensure_ascii=False,
+        )
+        return context, coverage
+
+    def _synthesize_explanatory_report(self, agg: dict) -> dict:
+        """Gera explicação separada dos itens brutos, sem alterar o checklist."""
+        context, coverage = self._report_context(agg)
+        prompt = (
+            "Escreva em português um relatório claro para quem está lendo um edital. "
+            "Use SOMENTE os itens extraídos abaixo; não invente obrigações, valores, "
+            "prazos, conclusões jurídicas nem aptidão da empresa. "
+            "Se não houver informação, diga que não foi identificada na amostra. "
+            "A amostra não representa necessariamente o edital inteiro. "
+            "Responda APENAS em JSON com as chaves resumo e requisitos. "
+            "Em resumo, escreva 2 parágrafos explicando o objeto, o que se espera "
+            "do participante, prazos e principais pontos de atenção. "
+            "Em requisitos, escreva 2 ou 3 parágrafos conectando condições de participação, "
+            "critérios técnicos e de seleção com suas implicações práticas, conforme os itens. "
+            "Não faça lista e não inclua documentos obrigatórios: eles têm checklist próprio. "
+            "Não repita contagens nem trate risco como decisão definitiva.\n\n"
+            f"ITENS EXTRAÍDOS:\n{context}"
+        )
+        response = self._invoke_with_rotation([
+            SystemMessage(content="Redija apenas JSON válido, sem markdown."),
+            HumanMessage(content=prompt),
+        ])
+        parsed = self._parse_llm_json(response.content)
+        resumo = parsed.get("resumo")
+        requisitos = parsed.get("requisitos")
+        if not isinstance(resumo, str) or not resumo.strip():
+            raise ValueError("Síntese do resumo ausente ou inválida")
+        if not isinstance(requisitos, str) or not requisitos.strip():
+            raise ValueError("Síntese dos requisitos ausente ou inválida")
+        return {
+            "resumo": resumo.strip(),
+            "requisitos": requisitos.strip(),
+            "coverage": coverage,
+        }
+
     def _process_with_rag_llm(self, chunks: list[dict]) -> dict:
         """
         Passagem unica: 1 chamada ao LLM por batch, extraindo TODAS as informacoes.
@@ -1157,6 +1226,19 @@ Regras:
             time.sleep(SLEEP_BETWEEN)
 
         agg["nivel_risco"] = max_risk
+
+        # Uma chamada adicional produz explicações após a extração. Falhas nesta
+        # etapa ficam visíveis; os itens extraídos continuam disponíveis.
+        explanatory_report = None
+        explanatory_error = None
+        if any(agg[field] for field in ("requisitos_participacao", "selecao", "prazos", "riscos")):
+            try:
+                if _progress_callback:
+                    _progress_callback(stage="Redigindo resumo e requisitos")
+                explanatory_report = self._synthesize_explanatory_report(agg)
+            except Exception as exc:
+                logger.exception("Falha ao redigir o relatório explicativo")
+                explanatory_error = str(exc)
 
         # Mapeia para o formato compativel com display e Node 4
         # rag_answers simula as respostas por pergunta para a tab "Perguntas Respondidas"
@@ -1262,6 +1344,8 @@ Regras:
             "critical_analysis": critical_analysis,
             "llm_analysis": llm_analysis,
             "rag_answers": rag_answers,
+            "explanatory_report": explanatory_report,
+            "explanatory_error": explanatory_error,
         }
 
     def process_from_node2(self, chunks: list[dict]) -> dict:
