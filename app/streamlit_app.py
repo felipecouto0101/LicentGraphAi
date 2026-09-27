@@ -535,21 +535,28 @@ def display_results(result):
         if not checklist:
             st.info("Checklist não disponível. Nenhum documento foi identificado no edital.")
         else:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total de documentos", resumo.get("total_documentos", 0))
-            col2.metric("Obrigatórios",         resumo.get("obrigatorios", 0))
-            col3.metric("Opcionais",            resumo.get("opcionais", 0))
-            col4.metric("Categorias",           resumo.get("categorias", 0))
+            st.caption(
+                "Documentos identificados automaticamente. A apresentação, a etapa e a "
+                "obrigatoriedade de cada um precisam ser confirmadas no edital."
+            )
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Documentos citados", resumo.get("total_documentos", 0))
+            col2.metric("Obrigatórios confirmados", resumo.get("obrigatorios", 0))
+            col3.metric("Opcionais confirmados", resumo.get("opcionais", 0))
+            col4.metric("A confirmar", resumo.get("a_confirmar", 0))
+            col5.metric("Categorias", resumo.get("categorias", 0))
 
             st.divider()
 
             category_labels = {
-                "habilitacao": ("🪪", "Habilitação Jurídica"),
+                "habilitacao": ("🪪", "Cadastro e identificação"),
                 "fiscal":      ("🧾", "Regularidade Fiscal"),
                 "tecnica":     ("⚙️", "Qualificação Técnica"),
                 "juridica":    ("⚖️", "Documentação Jurídica"),
                 "trabalhista": ("👷", "Regularidade Trabalhista"),
-                "outros":      ("📂", "Outros Documentos"),
+                "economica":   ("📊", "Qualificação Econômica"),
+                "proposta":    ("📄", "Proposta e planilhas"),
+                "outros":      ("📂", "Outros documentos a conferir"),
             }
 
             for category, data in checklist.items():
@@ -568,11 +575,15 @@ def display_results(result):
 
                     for item in itens:
                         doc_name    = item.get("documento", "—").title()
-                        obrigatorio = item.get("obrigatorio", True)
+                        obrigatorio = item.get("obrigatorio")
                         status      = item.get("status", "pendente")
                         prazo       = item.get("prazo")
 
-                        badge       = "🔴 Obrigatório" if obrigatorio else "🟡 Opcional"
+                        badge = (
+                            "🔴 Obrigatório" if obrigatorio is True
+                            else "🟡 Opcional" if obrigatorio is False
+                            else "⚪ A confirmar"
+                        )
                         status_icon = {"pendente": "⬜", "ok": "✅", "faltando": "❌"}.get(status, "⬜")
 
                         cols = st.columns([0.04, 0.52, 0.22, 0.22])
