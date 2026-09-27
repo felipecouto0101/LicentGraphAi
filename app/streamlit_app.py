@@ -493,7 +493,18 @@ def display_results(result):
                 for i, item in enumerate(items, 1):
                     st.markdown(f"**{i}. {item}**")
                     if complete:
-                        st.write(explained[i - 1]["explicacao"])
+                        detail = explained[i - 1]
+                        status = detail.get("situacao")
+                        if status == "incerta":
+                            st.warning("Interpretação pendente: o trecho selecionado não sustenta uma conclusão segura.")
+                        elif status == "condicional":
+                            st.info("Regra condicional: depende da situação descrita na cláusula.")
+                        st.write(detail["explicacao"])
+                        evidence = detail.get("evidencia")
+                        if evidence:
+                            page = evidence.get("pagina")
+                            label = f"Página {page}" if page is not None else "Página não informada"
+                            st.caption(f"Trecho relacionado — {label}: {evidence.get('trecho', '')}")
 
             # Condições de participação e habilitação (não são etapas da disputa).
             participation_items = all_tech if selection_items is not None or not llm_analysis else []
