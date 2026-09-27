@@ -29,6 +29,8 @@ class Node3RequirementAnalyzer:
     """
 
     CHECKPOINT_VERSION = 1
+    # Mudanças no texto das explicações não devem descartar os lotes de extração.
+    EXPLANATION_VERSION = 2
 
     def __init__(
         self,
@@ -1221,6 +1223,7 @@ Regras:
         fresh = {
             "version": self.CHECKPOINT_VERSION, "fingerprint": fingerprint,
             "next_batch": 0, "agg": empty_agg, "max_risk": "BAIXO",
+            "explanation_version": self.EXPLANATION_VERSION,
             "explanations": {"participacao": {}, "selecao": {}},
         }
         if not self._checkpoint_file or not self._checkpoint_file.exists():
@@ -1242,6 +1245,11 @@ Regras:
                 raise ValueError("checkpoint incompatível")
             logger.info("Retomando análise: %s/%s lotes de extração já concluídos",
                         saved["next_batch"], total_batches)
+            if saved.get("explanation_version") != self.EXPLANATION_VERSION:
+                logger.info("Refazendo explicações com as instruções atualizadas; mantendo a extração")
+                saved["explanations"] = {"participacao": {}, "selecao": {}}
+                saved["explanation_version"] = self.EXPLANATION_VERSION
+                self._save_checkpoint(saved)
             return saved
         except (OSError, ValueError, TypeError, KeyError) as exc:
             logger.warning("Checkpoint ilegível ou incompatível, reiniciando: %s", exc)
@@ -1267,8 +1275,46 @@ Regras:
             if temp_name and os.path.exists(temp_name):
                 os.unlink(temp_name)
 
+    @staticmethod
+    def _explanation_context(batch: list[dict], agg: dict, chunks: list[dict]) -> dict:
+        """Seleciona contexto local por sobreposição lexical; não o trata como prova."""
+        stop = {"edital", "item", "requisito", "licitacao", "participante",
+                "empresa", "condicao", "condicoes", "proposta", "documento",
+                "documentos", "apresentar", "verificar", "ser", "estar"}
+
+        def terms(value: str) -> set[str]:
+            normalized = unicodedata.normalize("NFKD", value.casefold())
+            normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+            return {word[:6] for word in re.findall(r"[a-z0-9]+", normalized)
+                    if len(word) >= 5 and word not in stop}
+
+        other_items = agg.get("requisitos_participacao", []) + agg.get("selecao", [])
+        context = {}
+        for entry in batch:
+            tokens = terms(entry["item"])
+            related = sorted(
+                (other for other in other_items if other != entry["item"]
+                 and len(tokens & terms(other)) >= 2),
+                key=lambda other: len(tokens & terms(other)), reverse=True,
+            )[:3]
+            ranked = sorted(
+                (chunk for chunk in chunks if chunk.get("content")
+                 and len(tokens & terms(chunk["content"])) >= 2),
+                key=lambda chunk: len(tokens & terms(chunk["content"])), reverse=True,
+            )[:1]
+            context[str(entry["id"])] = {
+                "itens_relacionados": related,
+                "trechos_possivelmente_relacionados": [
+                    {"pagina": chunk.get("metadata", {}).get("page"),
+                     "texto": chunk["content"][:1100]}
+                    for chunk in ranked
+                ],
+            }
+        return context
+
     def _explain_all_requirements(
-        self, agg: dict, checkpoint: dict | None = None
+        self, agg: dict, checkpoint: dict | None = None,
+        chunks: list[dict] | None = None,
     ) -> dict[str, list[dict]]:
         """Explica cada item extraído; recusa respostas com itens faltando ou trocados."""
         import json
@@ -1325,16 +1371,29 @@ Regras:
                     time.sleep(8)
                 prompt = (
                     "Explique TODOS os itens abaixo, um por um, em português simples para quem "
-                    "nunca participou de uma licitação. Para cada ID, escreva 2 ou 3 frases "
-                    "sobre o que o enunciado significa e o que a pessoa precisa conferir ou fazer. "
-                    "Use exclusivamente o texto do item: não acrescente prazos, percentuais, "
-                    "documentos, procedimentos, conclusões jurídicas ou páginas ausentes. "
-                    "Se o item não disser como algo funciona, deixe claro que é preciso conferir "
-                    "os detalhes no edital. Se houver ambiguidade, explique-a sem decidir qual "
-                    "regra se aplica. Não agrupe, omita ou renumere IDs. "
+                    "nunca participou de uma licitação. Para cada ID, escreva até 2 frases "
+                    "úteis: explique a regra e seu efeito prático, sem repetir o título. "
+                    "Use o item e, quando realmente pertinente, o contexto do mesmo edital "
+                    "fornecido abaixo. Os trechos são encontrados por palavras e podem ser "
+                    "irrelevantes; não os trate como confirmação automática. "
+                    "Não invente dados, prazos, percentuais, obrigações, consequências ou "
+                    "conclusões jurídicas. Preserve as condições: uma faixa de classificação "
+                    "não é permissão de lance nem motivo automático de desclassificação; "
+                    "uma checagem feita pela administração não é tarefa do participante; "
+                    "uma vedação a empresas relacionadas concorrendo entre si não proíbe "
+                    "toda empresa com relações societárias. Se houver regras aparentemente "
+                    "incompatíveis, aponte a divergência sem decidir qual prevalece. "
+                    "Regras gerais sobre cumprir o edital abrangem os requisitos concretos "
+                    "explicados nos demais itens: não diga que o edital não lista suas condições. "
+                    "Não acrescente 'o texto não detalha', 'consulte o edital' ou variações "
+                    "por hábito; a interface já exibe um aviso geral. Mencione uma lacuna "
+                    "somente se ela impedir a compreensão deste item e diga qual dado falta. "
+                    "Não agrupe, omita ou renumere IDs. "
                     "Responda somente JSON no formato "
                     '{"explicacoes":[{"id":1,"explicacao":"Texto claro."}]}.'
-                    f"\nTEMA: {topic}\nITENS: {json.dumps(missing, ensure_ascii=False)}"
+                    f"\nTEMA: {topic}\nCONTEXTO POR ID: "
+                    f"{json.dumps(self._explanation_context(missing, agg, chunks or []), ensure_ascii=False)}"
+                    f"\nITENS: {json.dumps(missing, ensure_ascii=False)}"
                 )
                 invoked_this_task = True
                 response = self._invoke_with_rotation([
@@ -1546,7 +1605,7 @@ Regras:
 
         # A síntese acima é uma amostra; esta etapa cobre TODOS os itens das duas
         # seções mostradas na interface, inclusive quando há muitos itens.
-        detailed_explanations = self._explain_all_requirements(agg, checkpoint)
+        detailed_explanations = self._explain_all_requirements(agg, checkpoint, chunks)
 
         # Mapeia para o formato compativel com display e Node 4
         # rag_answers simula as respostas por pergunta para a tab "Perguntas Respondidas"
