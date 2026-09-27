@@ -3,6 +3,10 @@ import os
 import re
 import time
 import unicodedata
+import hashlib
+import json
+import tempfile
+from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -23,6 +27,8 @@ class Node3RequirementAnalyzer:
     - Inicializar modelo Llama 3.1
     - Analisar requisitos de editais
     """
+
+    CHECKPOINT_VERSION = 1
 
     def __init__(
         self,
@@ -50,6 +56,10 @@ class Node3RequirementAnalyzer:
         self.mock_mode = mock_mode
         self.persist_directory = persist_directory
         self.collection_name = collection_name
+        self.checkpoint_directory = (
+            Path(os.getenv("LICIT_CHECKPOINT_DIR", "./data/checkpoints"))
+            if not mock_mode else None
+        )
 
         if not self.api_key and not mock_mode:
             raise ValueError(
@@ -1172,7 +1182,74 @@ Regras:
             "coverage": coverage,
         }
 
-    def _explain_all_requirements(self, agg: dict) -> dict[str, list[dict]]:
+    def _load_checkpoint(self, chunks: list[dict], total_batches: int, empty_agg: dict) -> dict:
+        """Carrega somente um checkpoint compatível com o conteúdo e a versão atuais."""
+        payload = json.dumps(
+            {
+                "version": self.CHECKPOINT_VERSION,
+                "model": getattr(self, "model_name", ""),
+                "chunks": [
+                    (chunk.get("content"), chunk.get("section"),
+                     chunk.get("metadata", {}).get("page"))
+                    for chunk in chunks
+                ],
+            }, ensure_ascii=False, sort_keys=True,
+        )
+        fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        directory = getattr(self, "checkpoint_directory", None)
+        self._checkpoint_file = Path(directory) / f"{fingerprint}.json" if directory else None
+        fresh = {
+            "version": self.CHECKPOINT_VERSION, "fingerprint": fingerprint,
+            "next_batch": 0, "agg": empty_agg, "max_risk": "BAIXO",
+            "explanations": {"participacao": {}, "selecao": {}},
+        }
+        if not self._checkpoint_file or not self._checkpoint_file.exists():
+            return fresh
+        try:
+            saved = json.loads(self._checkpoint_file.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                raise ValueError("checkpoint não é um objeto JSON")
+            if (saved.get("version") != self.CHECKPOINT_VERSION
+                    or saved.get("fingerprint") != fingerprint
+                    or type(saved.get("next_batch")) is not int
+                    or not 0 <= saved["next_batch"] <= total_batches
+                    or not isinstance(saved.get("agg"), dict)
+                    or set(saved["agg"]) != set(empty_agg)
+                    or any(not isinstance(saved["agg"][key], type(value))
+                           for key, value in empty_agg.items())
+                    or saved.get("max_risk") not in {"ALTO", "MEDIO", "BAIXO"}
+                    or not isinstance(saved.get("explanations"), dict)):
+                raise ValueError("checkpoint incompatível")
+            logger.info("Retomando análise: %s/%s lotes de extração já concluídos",
+                        saved["next_batch"], total_batches)
+            return saved
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning("Checkpoint ilegível ou incompatível, reiniciando: %s", exc)
+            return fresh
+
+    def _save_checkpoint(self, state: dict) -> None:
+        target = getattr(self, "_checkpoint_file", None)
+        if target is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temp_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=target.parent,
+                prefix="checkpoint_", suffix=".tmp", delete=False,
+            ) as handle:
+                temp_name = handle.name
+                json.dump(state, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, target)
+        finally:
+            if temp_name and os.path.exists(temp_name):
+                os.unlink(temp_name)
+
+    def _explain_all_requirements(
+        self, agg: dict, checkpoint: dict | None = None
+    ) -> dict[str, list[dict]]:
         """Explica cada item extraído; recusa respostas com itens faltando ou trocados."""
         import json
 
@@ -1187,6 +1264,7 @@ Regras:
             for offset in range(0, len(items), batch_size)
         ]
         explained: dict[str, list[dict]] = {topic: [] for topic in topics}
+        saved = checkpoint.setdefault("explanations", {}) if checkpoint is not None else {}
 
         for task_index, (topic, items, offset) in enumerate(tasks, 1):
             batch = [
@@ -1202,7 +1280,14 @@ Regras:
                     batch_atual=task_index,
                     batch_total=len(tasks),
                 )
-            explanations_by_id = {}
+            stored_for_topic = saved.setdefault(topic, {}) if checkpoint is not None else {}
+            explanations_by_id = {
+                entry["id"]: stored_for_topic[str(entry["id"])]
+                for entry in batch
+                if isinstance(stored_for_topic.get(str(entry["id"])), str)
+                and len(stored_for_topic[str(entry["id"])].split()) >= 8
+            }
+            invoked_this_task = False
             for attempt in range(3):
                 missing = [entry for entry in batch if entry["id"] not in explanations_by_id]
                 if not missing:
@@ -1231,6 +1316,7 @@ Regras:
                     '{"explicacoes":[{"id":1,"explicacao":"Texto claro."}]}.'
                     f"\nTEMA: {topic}\nITENS: {json.dumps(missing, ensure_ascii=False)}"
                 )
+                invoked_this_task = True
                 response = self._invoke_with_rotation([
                     SystemMessage(content="Responda apenas JSON válido com todos os IDs recebidos."),
                     HumanMessage(content=prompt),
@@ -1245,6 +1331,10 @@ Regras:
                                 and isinstance(row.get("explicacao"), str)
                                 and len(row["explicacao"].split()) >= 8):
                             explanations_by_id[row["id"]] = row["explicacao"].strip()
+                            if checkpoint is not None:
+                                stored_for_topic[str(row["id"])] = row["explicacao"].strip()
+                    if checkpoint is not None:
+                        self._save_checkpoint(checkpoint)
             missing_ids = [entry["id"] for entry in batch if entry["id"] not in explanations_by_id]
             if missing_ids:
                 raise RuntimeError(
@@ -1255,7 +1345,7 @@ Regras:
                 {**entry, "explicacao": explanations_by_id[entry["id"]]}
                 for entry in batch
             ])
-            if task_index < len(tasks):
+            if invoked_this_task and task_index < len(tasks):
                 time.sleep(8)
 
         for topic, items in topics.items():
@@ -1301,7 +1391,9 @@ Regras:
             "nivel_risco": "BAIXO",
         }
         max_risk = "BAIXO"
-        failed_batches = []
+        checkpoint = self._load_checkpoint(chunks, total, agg)
+        agg = checkpoint["agg"]
+        max_risk = checkpoint["max_risk"]
 
         def normalized(item):
             text = unicodedata.normalize("NFKD", item.casefold())
@@ -1317,7 +1409,8 @@ Regras:
                     lst.append(item)
                     seen.add(key)
 
-        for b_idx, batch in enumerate(all_batches):
+        for b_idx in range(checkpoint["next_batch"], total):
+            batch = all_batches[b_idx]
             if _progress_callback:
                 total_itens = sum(len(v) for v in agg.values() if isinstance(v, list))
                 _progress_callback(
@@ -1361,18 +1454,18 @@ Regras:
                     total_acc = sum(len(v) for v in agg.values() if isinstance(v, list))
                     logger.info(f"  batch {b_idx+1}/{total}: +{gained} itens (total={total_acc})")
 
+                checkpoint.update(next_batch=b_idx + 1, agg=agg, max_risk=max_risk)
+                self._save_checkpoint(checkpoint)
+
             except Exception as e:
                 logger.error(f"  batch {b_idx+1} erro: {e}")
-                failed_batches.append(b_idx + 1)
+                raise RuntimeError(
+                    f"Análise incompleta: falha no lote {b_idx + 1}/{total}; "
+                    "os lotes anteriores foram salvos para retomada."
+                ) from e
 
             if b_idx + 1 < total:
                 time.sleep(SLEEP_BETWEEN)
-
-        if failed_batches:
-            raise RuntimeError(
-                f"Análise incompleta: falha nos lotes {failed_batches} de {total}. "
-                "Nenhum relatório final foi publicado."
-            )
 
         agg["nivel_risco"] = max_risk
 
@@ -1393,6 +1486,8 @@ Regras:
                 agg[field] = [item for item in agg[field] if normalized(item) not in conflicts]
             add_unique(agg["pendencias_documentais"],
                        [originals[key] for key in originals if key in conflicts])
+        checkpoint["agg"] = agg
+        self._save_checkpoint(checkpoint)
 
         # A recuperação temática consulta somente a coleção deste edital.
         # Os trechos e páginas acompanham o relatório para conferência.
@@ -1414,20 +1509,24 @@ Regras:
 
         # Uma chamada adicional produz explicações após a extração. Falhas nesta
         # etapa ficam visíveis; os itens extraídos continuam disponíveis.
-        explanatory_report = None
+        explanatory_report = checkpoint.get("explanatory_report")
         explanatory_error = None
-        if any(agg[field] for field in ("requisitos_participacao", "selecao", "prazos", "riscos")):
+        if explanatory_report is None and any(
+            agg[field] for field in ("requisitos_participacao", "selecao", "prazos", "riscos")
+        ):
             try:
                 if _progress_callback:
                     _progress_callback(stage="Redigindo resumo e requisitos")
                 explanatory_report = self._synthesize_explanatory_report(agg, source_refs)
+                checkpoint["explanatory_report"] = explanatory_report
+                self._save_checkpoint(checkpoint)
             except Exception as exc:
                 logger.exception("Falha ao redigir o relatório explicativo")
                 explanatory_error = str(exc)
 
         # A síntese acima é uma amostra; esta etapa cobre TODOS os itens das duas
         # seções mostradas na interface, inclusive quando há muitos itens.
-        detailed_explanations = self._explain_all_requirements(agg)
+        detailed_explanations = self._explain_all_requirements(agg, checkpoint)
 
         # Mapeia para o formato compativel com display e Node 4
         # rag_answers simula as respostas por pergunta para a tab "Perguntas Respondidas"
