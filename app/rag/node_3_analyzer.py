@@ -1165,6 +1165,79 @@ Regras:
             "coverage": coverage,
         }
 
+    def _explain_all_requirements(self, agg: dict) -> dict[str, list[dict]]:
+        """Explica cada item extraído; recusa respostas com itens faltando ou trocados."""
+        import json
+
+        topics = {
+            "participacao": agg["requisitos_participacao"],
+            "selecao": agg["selecao"],
+        }
+        batch_size = 5
+        tasks = [
+            (topic, items, offset)
+            for topic, items in topics.items()
+            for offset in range(0, len(items), batch_size)
+        ]
+        explained: dict[str, list[dict]] = {topic: [] for topic in topics}
+
+        for task_index, (topic, items, offset) in enumerate(tasks, 1):
+            batch = [
+                {"id": i + 1, "item": item}
+                for i, item in enumerate(items[offset:offset + batch_size], offset)
+            ]
+            if _progress_callback:
+                _progress_callback(
+                    stage="Explicando todos os requisitos",
+                    query_atual=f"{topic}: itens {offset + 1}–{offset + len(batch)}",
+                    query_num=task_index,
+                    query_total=len(tasks),
+                    batch_atual=task_index,
+                    batch_total=len(tasks),
+                )
+            prompt = (
+                "Explique TODOS os itens abaixo, um por um, em português simples para quem "
+                "nunca participou de uma licitação. Para cada ID, escreva 2 ou 3 frases "
+                "sobre o que o enunciado significa e o que a pessoa precisa conferir ou fazer. "
+                "Use exclusivamente o texto do item: não acrescente prazos, percentuais, "
+                "documentos, procedimentos, conclusões jurídicas ou páginas ausentes. "
+                "Se o item não disser como algo funciona, deixe claro que é preciso conferir "
+                "os detalhes no edital. Se houver ambiguidade, explique-a sem decidir qual "
+                "regra se aplica. Não agrupe, omita ou renumere IDs. "
+                "Responda somente JSON no formato "
+                '{"explicacoes":[{"id":1,"explicacao":"Texto claro."}]}.'
+                f"\nTEMA: {topic}\nITENS: {json.dumps(batch, ensure_ascii=False)}"
+            )
+            response = self._invoke_with_rotation([
+                SystemMessage(content="Responda apenas JSON válido com todos os IDs recebidos."),
+                HumanMessage(content=prompt),
+            ])
+            parsed = self._parse_llm_json(response.content)
+            rows = parsed.get("explicacoes") if isinstance(parsed, dict) else None
+            expected_ids = {entry["id"] for entry in batch}
+            if (not isinstance(rows, list) or len(rows) != len(batch)
+                    or any(not isinstance(row, dict) or type(row.get("id")) is not int
+                           or not isinstance(row.get("explicacao"), str)
+                           or len(row["explicacao"].split()) < 8
+                           for row in rows)
+                    or {row["id"] for row in rows} != expected_ids):
+                raise RuntimeError(
+                    f"Explicação incompleta em {topic}, itens {offset + 1}–"
+                    f"{offset + len(batch)}; relatório não publicado."
+                )
+            explanations_by_id = {row["id"]: row["explicacao"].strip() for row in rows}
+            explained[topic].extend([
+                {**entry, "explicacao": explanations_by_id[entry["id"]]}
+                for entry in batch
+            ])
+            if task_index < len(tasks):
+                time.sleep(8)
+
+        for topic, items in topics.items():
+            if len(explained[topic]) != len(items):
+                raise RuntimeError(f"Explicação incompleta em {topic}; relatório não publicado.")
+        return explained
+
     def _process_with_rag_llm(self, chunks: list[dict]) -> dict:
         """
         Passagem unica: 1 chamada ao LLM por batch, extraindo TODAS as informacoes.
@@ -1304,6 +1377,10 @@ Regras:
                 logger.exception("Falha ao redigir o relatório explicativo")
                 explanatory_error = str(exc)
 
+        # A síntese acima é uma amostra; esta etapa cobre TODOS os itens das duas
+        # seções mostradas na interface, inclusive quando há muitos itens.
+        detailed_explanations = self._explain_all_requirements(agg)
+
         # Mapeia para o formato compativel com display e Node 4
         # rag_answers simula as respostas por pergunta para a tab "Perguntas Respondidas"
         rag_answers = {
@@ -1409,6 +1486,7 @@ Regras:
             "llm_analysis": llm_analysis,
             "rag_answers": rag_answers,
             "selection_process": agg["selecao"],
+            "detailed_explanations": detailed_explanations,
             "rag_sources": source_refs,
             "explanatory_report": explanatory_report,
             "explanatory_error": explanatory_error,
