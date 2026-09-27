@@ -14,6 +14,7 @@ class PDFReader:
     def __init__(self):
         self.pdf_path: Path | None = None
         self.text: str = ""
+        self.pages_text: list[str] = []
 
     def load_pdf(self, pdf_path: str) -> str:
         """
@@ -35,15 +36,14 @@ class PDFReader:
             raise FileNotFoundError(f"Arquivo PDF não encontrado: {pdf_path}")
 
         try:
-            text_parts = []
+            # Preserva o índice original, inclusive páginas sem texto extraível.
             with pdfplumber.open(self.pdf_path) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(page_text)
+                self.pages_text = [
+                    self._clean_text(page.extract_text() or "")
+                    for page in pdf.pages
+                ]
 
-            raw_text = "\n".join(text_parts)
-            self.text = self._clean_text(raw_text)
+            self.text = "\n\n".join(text for text in self.pages_text if text)
             return self.text
 
         except Exception as e:
