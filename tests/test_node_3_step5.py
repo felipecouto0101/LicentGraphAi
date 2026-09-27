@@ -140,15 +140,43 @@ class TestNode3IntegrationWithNode2:
     def test_incomplete_explanation_fails_instead_of_dropping_an_item(self, monkeypatch):
         import pytest
         from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
 
         analyzer = object.__new__(Node3RequirementAnalyzer)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
         monkeypatch.setattr(analyzer, "_invoke_with_rotation", lambda messages:
                             SimpleNamespace(content='{"explicacoes":[{"id":1,'
                                                     '"explicacao":"Este item descreve uma condição que deve ser conferida no edital."}]}'))
         agg = {"requisitos_participacao": [], "selecao": ["Primeiro", "Segundo"]}
         with pytest.raises(RuntimeError, match="Explicação incompleta"):
             analyzer._explain_all_requirements(agg)
+
+    def test_retries_only_missing_explanation_ids(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        requested = []
+        def invoke(messages):
+            batch = json.loads(messages[-1].content.split("ITENS: ", 1)[1])
+            requested.append([row["id"] for row in batch])
+            rows = batch[:1] if len(requested) == 1 else batch
+            return SimpleNamespace(content=json.dumps({"explicacoes": [
+                {"id": row["id"], "explicacao":
+                 "Este item precisa ser conferido no edital para entender sua aplicação."}
+                for row in rows
+            ]}))
+
+        monkeypatch.setattr(analyzer, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        result = analyzer._explain_all_requirements({
+            "requisitos_participacao": ["Um", "Dois", "Três"], "selecao": []
+        })
+        assert requested == [[1, 2, 3], [2, 3]]
+        assert [row["id"] for row in result["participacao"]] == [1, 2, 3]
 
     def test_failed_batch_cannot_publish_success(self, monkeypatch):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
