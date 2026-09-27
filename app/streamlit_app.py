@@ -41,7 +41,10 @@ def _render_job_progress(job_id: str, api_url: str):
 
     if status == "done":
         # Análise concluída — armazena resultado e rerenderiza
-        st.session_state["result"] = {"result": job.get("result", {})}
+        st.session_state["result"] = {
+            "result": job.get("result", {}),
+            "analysis_mode": job.get("analysis_mode", "real"),
+        }
         st.session_state.pop("job_id", None)
         st.rerun()
         return
@@ -90,6 +93,18 @@ def main():
     # Sidebar
     st.sidebar.title("Configurações")
     api_url = st.sidebar.text_input("URL da API", value=API_URL)
+
+    try:
+        api_status = requests.get(f"{api_url}/status", timeout=3).json()
+        if not api_status.get("ready", True):
+            st.error(api_status.get("configuration_error", "Análise indisponível."))
+        if api_status.get("analysis_mode") == "demo":
+            st.warning(
+                "⚠️ Modo de demonstração: resultados simulados/heurísticos, "
+                "sem análise pela Groq. Não use estes resultados para avaliar um edital real."
+            )
+    except requests.RequestException:
+        pass
     
     # Tabs
     tab1, tab2, tab3 = st.tabs(["Análise", "Status", "Sobre"])
@@ -247,6 +262,8 @@ def display_results(result):
     """Exibe os resultados da análise de forma legível."""
 
     st.header("📊 Resultados da Análise")
+    if result.get("analysis_mode") == "demo":
+        st.warning("⚠️ Resultado de demonstração, sem análise pela Groq.")
 
     result_data = result.get("result", {})
 
