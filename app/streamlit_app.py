@@ -310,6 +310,7 @@ def display_results(result):
 
     all_tech      = aggregate("technical_requirements")
     selection_items = analysis.get("selection_process")
+    detailed_explanations = analysis.get("detailed_explanations") or {}
     all_docs_raw  = aggregate("documentation")
     all_deadlines = aggregate("deadlines")
     all_risks     = aggregate_critical("critical_points")
@@ -468,12 +469,31 @@ def display_results(result):
         if not structured:
             st.info("Análise de requisitos não disponível.")
         else:
+            st.caption(
+                "As explicações cobrem os itens identificados na análise. "
+                "Confira as cláusulas no PDF: a extração automática pode deixar informações de fora."
+            )
+
+            def render_explained_items(topic, items):
+                explained = detailed_explanations.get(topic, [])
+                complete = (
+                    len(explained) == len(items)
+                    and all(row.get("id") == i and row.get("item") == item
+                            and row.get("explicacao")
+                            for i, (row, item) in enumerate(zip(explained, items), 1))
+                )
+                if not complete:
+                    st.caption("Explicações item a item indisponíveis nesta análise; itens originais abaixo.")
+                for i, item in enumerate(items, 1):
+                    st.markdown(f"**{i}. {item}**")
+                    if complete:
+                        st.write(explained[i - 1]["explicacao"])
+
             # Condições de participação e habilitação (não são etapas da disputa).
             participation_items = all_tech if selection_items is not None or not llm_analysis else []
             if participation_items:
                 with st.expander(f"📋 Condições de participação e habilitação — {len(participation_items)} item(ns)", expanded=False):
-                    for i, req in enumerate(participation_items, 1):
-                        st.write(f"**{i}.** {req}")
+                    render_explained_items("participacao", participation_items)
             elif selection_items is not None:
                 st.info("Nenhuma condição de participação ou habilitação identificada.")
 
@@ -482,8 +502,7 @@ def display_results(result):
             selection_display = selection_items if selection_items is not None else (all_tech if llm_analysis else [])
             if selection_display:
                 with st.expander(f"⚖️ Disputa, julgamento e avaliação — {len(selection_display)} item(ns)", expanded=False):
-                    for i, item in enumerate(selection_display, 1):
-                        st.write(f"**{i}.** {item}")
+                    render_explained_items("selecao", selection_display)
 
             # Prazos — todos aqui
             if all_deadlines:
