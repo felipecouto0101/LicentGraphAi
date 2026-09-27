@@ -279,6 +279,8 @@ def display_results(result):
     structured    = analysis.get("structured_analysis", {})
     critical      = analysis.get("critical_analysis", {})
     llm_analysis  = analysis.get("llm_analysis")  # None em mock mode
+    narrative     = analysis.get("explanatory_report") or {}
+    narrative_error = analysis.get("explanatory_error")
     checklist_data = result_data.get("checklist") or {}
     resumo        = checklist_data.get("resumo", {})
     checklist     = checklist_data.get("checklist", {})
@@ -315,6 +317,23 @@ def display_results(result):
     # TAB 1 — Resumo executivo
     # ──────────────────────────────────────────────────────────────
     with result_tab1:
+        if narrative.get("resumo"):
+            st.subheader("Visão geral do edital")
+            for paragraph in narrative["resumo"].split("\n\n"):
+                if paragraph.strip():
+                    st.write(paragraph.strip())
+            coverage = narrative.get("coverage", {})
+            if any(v.get("included", 0) < v.get("total", 0) for v in coverage.values()):
+                st.caption(
+                    "Síntese baseada em uma amostra dos itens extraídos em cada tema. "
+                    "Confira os detalhes e o PDF original antes de tomar decisões."
+                )
+            st.divider()
+        elif narrative_error:
+            st.warning(
+                "Não foi possível redigir o texto explicativo. "
+                "Os itens extraídos estão disponíveis nas demais abas."
+            )
         chunks_count     = result_data.get("chunks_count", 0)
         embeddings_count = (result_data.get("embeddings") or {}).get("total_embeddings", 0)
         docs_count       = resumo.get("total_documentos", 0)
@@ -393,16 +412,16 @@ def display_results(result):
                 icon  = risk_icon.get(risco, "⚪")
                 label_display = ans.get("label", label)
 
-                with st.expander(f"{icon} {label_display}", expanded=True):
+                with st.expander(f"{icon} {label_display}", expanded=False):
                     resposta = ans.get("resposta", "")
                     if resposta:
                         st.markdown(f"**{resposta}**")
 
                     detalhes = ans.get("detalhes", [])
                     if detalhes:
-                        st.markdown("")
-                        for item in detalhes:
-                            st.write(f"• {item}")
+                        with st.expander(f"Ver {len(detalhes)} itens extraídos", expanded=False):
+                            for item in detalhes:
+                                st.write(f"• {item}")
 
                     obs = ans.get("observacao", "")
                     if obs:
@@ -412,12 +431,23 @@ def display_results(result):
     # TAB 3 — Análise de Requisitos
     # ──────────────────────────────────────────────────────────────
     with result_tab3:
+        if narrative.get("requisitos"):
+            st.subheader("Explicação dos requisitos")
+            for paragraph in narrative["requisitos"].split("\n\n"):
+                if paragraph.strip():
+                    st.write(paragraph.strip())
+            coverage = narrative.get("coverage", {})
+            if any(v.get("included", 0) < v.get("total", 0) for v in coverage.values()):
+                st.caption("Texto baseado em amostra; consulte todos os itens abaixo e o edital.")
+        elif narrative_error:
+            st.warning("Texto explicativo indisponível; consulte os itens extraídos abaixo.")
+
         if not structured:
             st.info("Análise de requisitos não disponível.")
         else:
             # Requisitos técnicos
             if all_tech:
-                with st.expander(f"⚙️ Requisitos Técnicos — {len(all_tech)} item(ns)", expanded=True):
+                with st.expander(f"⚙️ Requisitos Técnicos — {len(all_tech)} item(ns)", expanded=False):
                     for i, req in enumerate(all_tech, 1):
                         st.write(f"**{i}.** {req}")
             else:
@@ -425,7 +455,7 @@ def display_results(result):
 
             # Prazos — todos aqui
             if all_deadlines:
-                with st.expander(f"⏰ Prazos e Cronogramas — {len(all_deadlines)} item(ns)", expanded=True):
+                with st.expander(f"⏰ Prazos e Cronogramas — {len(all_deadlines)} item(ns)", expanded=False):
                     for d in all_deadlines:
                         st.write(f"• {d}")
             else:
@@ -443,9 +473,9 @@ def display_results(result):
             # Todas as recomendações
             if all_recs:
                 st.divider()
-                st.subheader("💡 Recomendações")
-                for rec in all_recs:
-                    st.success(f"✔ {rec}")
+                with st.expander(f"💡 Recomendações extraídas — {len(all_recs)}", expanded=False):
+                    for rec in all_recs:
+                        st.write(f"• {rec}")
 
     # ──────────────────────────────────────────────────────────────
     # TAB 4 — Checklist de Documentos
