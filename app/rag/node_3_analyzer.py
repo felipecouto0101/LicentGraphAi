@@ -1112,6 +1112,7 @@ Regras:
             "Responda APENAS em JSON com as chaves resumo e requisitos. "
             "Em resumo, escreva 2 parágrafos explicando o objeto, o que se espera "
             "do participante, prazos e principais pontos de atenção. "
+            "Cada parágrafo deve ter no máximo 65 palavras. "
             "Em requisitos, escreva 2 ou 3 parágrafos conectando condições de participação, "
             "critérios técnicos e de seleção com suas implicações práticas, conforme os itens. "
             "Não faça lista e não inclua documentos obrigatórios: eles têm checklist próprio. "
