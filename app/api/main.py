@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.rag.langgraph_workflow import run_licit_graph_pipeline
+from app.rag.langgraph_workflow import run_licit_graph_pipeline, is_mock_mode, validate_analysis_configuration
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,6 +75,7 @@ def _run_pipeline_job(job_id: str, file_path: str, company_profile: Optional[dic
                     "embeddings": result.get("embeddings"),
                     "analysis": result.get("analysis"),
                     "checklist": result.get("checklist"),
+                    "analysis_mode": "demo" if is_mock_mode() else "real",
                 }
 
     except Exception as e:
@@ -105,12 +106,20 @@ async def root():
 
 @app.get("/status")
 async def get_status():
+    try:
+        validate_analysis_configuration()
+        configuration_error = None
+    except ValueError as exc:
+        configuration_error = str(exc)
     return {
         "status": "online",
+        "ready": configuration_error is None,
+        "configuration_error": configuration_error,
         "service": "LicitGraphAi API",
         "version": "1.0.0",
         "nodes": ["node_1", "node_2", "node_3", "node_4"],
-        "orchestration": "LangGraph"
+        "orchestration": "LangGraph",
+        "analysis_mode": "demo" if is_mock_mode() else "real"
     }
 
 
@@ -154,6 +163,11 @@ async def analyze_with_upload(file: UploadFile = File(...), company_profile: Opt
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Apenas arquivos PDF são aceitos")
 
+    try:
+        validate_analysis_configuration()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     file_id = str(uuid.uuid4())
     file_path = UPLOAD_DIR / f"{file_id}_{file.filename}"
 
@@ -168,6 +182,7 @@ async def analyze_with_upload(file: UploadFile = File(...), company_profile: Opt
         _jobs[job_id] = {
             "status": "queued",
             "file": file.filename,
+            "analysis_mode": "demo" if is_mock_mode() else "real",
             "progress": {
                 "stage": "Na fila...",
                 "query_atual": "",
