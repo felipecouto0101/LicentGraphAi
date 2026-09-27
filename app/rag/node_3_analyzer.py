@@ -28,7 +28,7 @@ class Node3RequirementAnalyzer:
         api_key: str | None = None,
         model_name: str = "qwen/qwen3.8-27b",
         temperature: float = 0.3,
-        max_tokens: int = 800,
+        max_tokens: int = 1600,
         mock_mode: bool = False,
         persist_directory: str = "./data/vector_db",
         collection_name: str = "licitacoes",
@@ -1022,8 +1022,7 @@ Regras:
                 logger.info(f"RAG '{label}': {len(chunks)} chunks recuperados")
 
             except Exception as e:
-                logger.warning(f"RAG '{label}': erro na busca — {e}")
-                results_by_query[key] = []
+                raise RuntimeError(f"Falha na busca vetorial RAG para '{label}': {e}") from e
 
         return results_by_query
 
@@ -1100,9 +1099,22 @@ Regras:
         )
         return context, coverage
 
-    def _synthesize_explanatory_report(self, agg: dict) -> dict:
+    def _synthesize_explanatory_report(
+        self, agg: dict, source_refs: dict | None = None
+    ) -> dict:
         """Gera explicação separada dos itens brutos, sem alterar o checklist."""
         context, coverage = self._report_context(agg)
+        import json
+        sources = source_refs or {}
+        # Limita o contexto de evidências sem esconder as fontes completas,
+        # que permanecem na resposta para conferência na interface.
+        evidence = {
+            topic: [
+                {"page": item["page"], "excerpt": item["excerpt"][:350]}
+                for item in items[:2]
+            ]
+            for topic, items in sources.items()
+        }
         prompt = (
             "Escreva em português um relatório claro para quem está lendo um edital. "
             "Use SOMENTE os itens extraídos abaixo; não invente obrigações, valores, "
@@ -1116,8 +1128,12 @@ Regras:
             "Em requisitos, escreva 2 ou 3 parágrafos conectando condições de participação, "
             "critérios técnicos e de seleção com suas implicações práticas, conforme os itens. "
             "Não faça lista e não inclua documentos obrigatórios: eles têm checklist próprio. "
-            "Não repita contagens nem trate risco como decisão definitiva.\n\n"
-            f"ITENS EXTRAÍDOS:\n{context}"
+            "Não repita contagens nem trate risco como decisão definitiva. "
+            "Quando mencionar fato apoiado pelos trechos de evidência, cite [p. N] "
+            "com a página física indicada; não crie páginas não fornecidas. "
+            "Não atribua ao PDF fatos que apareçam apenas nos itens extraídos.\n\n"
+            f"ITENS EXTRAÍDOS:\n{context}\n\n"
+            f"TRECHOS RECUPERADOS DO MESMO EDITAL:\n{json.dumps(evidence, ensure_ascii=False)}"
         )
         response = self._invoke_with_rotation([
             SystemMessage(content="Redija apenas JSON válido, sem markdown."),
@@ -1130,6 +1146,14 @@ Regras:
             raise ValueError("Síntese do resumo ausente ou inválida")
         if not isinstance(requisitos, str) or not requisitos.strip():
             raise ValueError("Síntese dos requisitos ausente ou inválida")
+        pages = {
+            str(source["page"])
+            for items in evidence.values() for source in items
+            if source.get("page") is not None
+        }
+        for cited_page in re.findall(r"\[p\.\s*(\d+)\]", resumo + " " + requisitos):
+            if cited_page not in pages:
+                raise ValueError(f"A síntese citou uma página não recuperada: {cited_page}")
         return {
             "resumo": resumo.strip(),
             "requisitos": requisitos.strip(),
@@ -1152,15 +1176,8 @@ Regras:
 
         risk_order = {"ALTO": 2, "MEDIO": 1, "BAIXO": 0}
 
-        # Prepara batches (500 chars por chunk)
-        trimmed = []
-        for c in chunks:
-            tc = dict(c)
-            if len(tc.get("content", "")) > 500:
-                tc["content"] = tc["content"][:500] + "..."
-            trimmed.append(tc)
-
-        all_batches = [trimmed[i:i+BATCH_SIZE] for i in range(0, len(trimmed), BATCH_SIZE)]
+        # O TextChunker já limita os trechos. Preserve o conteúdo completo.
+        all_batches = [chunks[i:i+BATCH_SIZE] for i in range(0, len(chunks), BATCH_SIZE)]
         total = len(all_batches)
         logger.info(f"Passagem unica: {len(chunks)} chunks -> {total} batches")
 
@@ -1178,6 +1195,7 @@ Regras:
             "nivel_risco": "BAIXO",
         }
         max_risk = "BAIXO"
+        failed_batches = []
 
         def add_unique(lst, items):
             for item in items:
@@ -1203,6 +1221,12 @@ Regras:
                     [system_msg, HumanMessage(content=prompt)], SLEEP_BETWEEN
                 )
                 parsed = self._parse_llm_json(response.content)
+                fields = ("documentos", "requisitos_participacao", "prazos",
+                          "custos", "selecao", "entregas", "eliminacao", "riscos")
+                if any(not isinstance(parsed.get(field), list) or
+                       any(not isinstance(item, str) for item in parsed[field])
+                       for field in fields):
+                    raise ValueError("JSON de extração incompleto ou inválido")
 
                 if not agg["objeto"] and parsed.get("objeto"):
                     agg["objeto"] = parsed["objeto"]
@@ -1223,10 +1247,36 @@ Regras:
 
             except Exception as e:
                 logger.error(f"  batch {b_idx+1} erro: {e}")
+                failed_batches.append(b_idx + 1)
 
-            time.sleep(SLEEP_BETWEEN)
+            if b_idx + 1 < total:
+                time.sleep(SLEEP_BETWEEN)
+
+        if failed_batches:
+            raise RuntimeError(
+                f"Análise incompleta: falha nos lotes {failed_batches} de {total}. "
+                "Nenhum relatório final foi publicado."
+            )
 
         agg["nivel_risco"] = max_risk
+
+        # A recuperação temática consulta somente a coleção deste edital.
+        # Os trechos e páginas acompanham o relatório para conferência.
+        rag_sources = self._retrieve_rag_chunks(top_k=3)
+        if not any(rag_sources.values()):
+            raise RuntimeError("A busca vetorial não retornou trechos deste edital")
+        source_refs = {
+            topic: [
+                {
+                    "page": chunk.get("metadata", {}).get("page"),
+                    "chunk_id": chunk.get("metadata", {}).get("chunk_id"),
+                    "section": chunk.get("section", "geral"),
+                    "excerpt": chunk["content"][:450],
+                }
+                for chunk in retrieved
+            ]
+            for topic, retrieved in rag_sources.items()
+        }
 
         # Uma chamada adicional produz explicações após a extração. Falhas nesta
         # etapa ficam visíveis; os itens extraídos continuam disponíveis.
@@ -1236,7 +1286,7 @@ Regras:
             try:
                 if _progress_callback:
                     _progress_callback(stage="Redigindo resumo e requisitos")
-                explanatory_report = self._synthesize_explanatory_report(agg)
+                explanatory_report = self._synthesize_explanatory_report(agg, source_refs)
             except Exception as exc:
                 logger.exception("Falha ao redigir o relatório explicativo")
                 explanatory_error = str(exc)
@@ -1345,6 +1395,7 @@ Regras:
             "critical_analysis": critical_analysis,
             "llm_analysis": llm_analysis,
             "rag_answers": rag_answers,
+            "rag_sources": source_refs,
             "explanatory_report": explanatory_report,
             "explanatory_error": explanatory_error,
         }
