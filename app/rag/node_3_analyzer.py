@@ -30,7 +30,7 @@ class Node3RequirementAnalyzer:
 
     CHECKPOINT_VERSION = 1
     # Mudanças no texto das explicações não devem descartar os lotes de extração.
-    EXPLANATION_VERSION = 2
+    EXPLANATION_VERSION = 3
 
     def __init__(
         self,
@@ -1277,7 +1277,7 @@ Regras:
 
     @staticmethod
     def _explanation_context(batch: list[dict], agg: dict, chunks: list[dict]) -> dict:
-        """Seleciona contexto local por sobreposição lexical; não o trata como prova."""
+        """Seleciona candidatos a evidência; somente citação literal será validada."""
         stop = {"edital", "item", "requisito", "licitacao", "participante",
                 "empresa", "condicao", "condicoes", "proposta", "documento",
                 "documentos", "apresentar", "verificar", "ser", "estar"}
@@ -1301,16 +1301,39 @@ Regras:
                 (chunk for chunk in chunks if chunk.get("content")
                  and len(tokens & terms(chunk["content"])) >= 2),
                 key=lambda chunk: len(tokens & terms(chunk["content"])), reverse=True,
-            )[:1]
+            )[:2]
             context[str(entry["id"])] = {
                 "itens_relacionados": related,
-                "trechos_possivelmente_relacionados": [
+                "trechos_candidatos": [
                     {"pagina": chunk.get("metadata", {}).get("page"),
                      "texto": chunk["content"][:1100]}
                     for chunk in ranked
                 ],
             }
         return context
+
+    @staticmethod
+    def _valid_explanation_evidence(row: dict, candidates: list[dict]) -> dict | None:
+        """Confere citação literal e página; similaridade sozinha não é evidência."""
+        evidence = row.get("evidencia")
+        if not isinstance(evidence, dict):
+            return None
+        quote = evidence.get("trecho")
+        page = evidence.get("pagina")
+        if not isinstance(quote, str) or not 15 <= len(quote.strip()) <= 240:
+            return None
+        normalized_quote = " ".join(quote.split()).casefold()
+        for candidate in candidates:
+            if (page == candidate["pagina"] and normalized_quote in
+                    " ".join(candidate["texto"].split()).casefold()):
+                return {"pagina": page, "trecho": quote.strip()}
+        return None
+
+    @staticmethod
+    def _numeric_claims_supported(explanation: str, item: str, quote: str) -> bool:
+        """Impede números novos na explicação sem apoio no item ou citação."""
+        numbers = lambda value: set(re.findall(r"\d+(?:[.,]\d+)*", value))
+        return numbers(explanation) <= numbers(item) | numbers(quote)
 
     def _explain_all_requirements(
         self, agg: dict, checkpoint: dict | None = None,
@@ -1331,6 +1354,9 @@ Regras:
         ]
         explained: dict[str, list[dict]] = {topic: [] for topic in topics}
         saved = checkpoint.setdefault("explanations", {}) if checkpoint is not None else {}
+        # Informação global do próprio documento, sem supor que haja capa ou modo.
+        cover = "\n".join(chunk.get("content", "") for chunk in (chunks or [])
+                          if chunk.get("metadata", {}).get("page") == 1)[:2500]
 
         for task_index, (topic, items, offset) in enumerate(tasks, 1):
             batch = [
@@ -1350,8 +1376,9 @@ Regras:
             explanations_by_id = {
                 entry["id"]: stored_for_topic[str(entry["id"])]
                 for entry in batch
-                if isinstance(stored_for_topic.get(str(entry["id"])), str)
-                and len(stored_for_topic[str(entry["id"])].split()) >= 8
+                if isinstance(stored_for_topic.get(str(entry["id"])), dict)
+                and stored_for_topic[str(entry["id"])].get("item") == entry["item"]
+                and stored_for_topic[str(entry["id"])].get("explicacao")
             }
             invoked_this_task = False
             for attempt in range(3):
@@ -1373,15 +1400,18 @@ Regras:
                     "Explique TODOS os itens abaixo, um por um, em português simples para quem "
                     "nunca participou de uma licitação. Para cada ID, escreva até 2 frases "
                     "úteis: explique a regra e seu efeito prático, sem repetir o título. "
-                    "Use o item e, quando realmente pertinente, o contexto do mesmo edital "
-                    "fornecido abaixo. Os trechos são encontrados por palavras e podem ser "
-                    "irrelevantes; não os trate como confirmação automática. "
+                    "Use o item e o contexto do mesmo documento. Trechos candidatos são "
+                    "encontrados por palavras e podem ser irrelevantes. Para cada ID, "
+                    "cite literalmente um trecho candidato que sustente a interpretação "
+                    "e informe a página, ou declare situacao=incerta. "
+                    "Classifique situacao como aplicavel, condicional ou incerta. "
+                    "Preserve todas as condições, exceções, etapas e sujeitos da regra. "
+                    "Uma regra alternativa ou hipotética não se torna aplicável apenas "
+                    "por estar descrita. Compare-a com os dados gerais deste documento "
+                    "quando houver. Se houver conflito ou faltar contexto, use incerta. "
                     "Não invente dados, prazos, percentuais, obrigações, consequências ou "
-                    "conclusões jurídicas. Preserve as condições: uma faixa de classificação "
-                    "não é permissão de lance nem motivo automático de desclassificação; "
-                    "uma checagem feita pela administração não é tarefa do participante; "
-                    "uma vedação a empresas relacionadas concorrendo entre si não proíbe "
-                    "toda empresa com relações societárias. Se houver regras aparentemente "
+                    "conclusões jurídicas. Não troque quem executa uma ação nem confunda "
+                    "requisito, consequência e hipótese. Se houver regras aparentemente "
                     "incompatíveis, aponte a divergência sem decidir qual prevalece. "
                     "Regras gerais sobre cumprir o edital abrangem os requisitos concretos "
                     "explicados nos demais itens: não diga que o edital não lista suas condições. "
@@ -1390,8 +1420,12 @@ Regras:
                     "somente se ela impedir a compreensão deste item e diga qual dado falta. "
                     "Não agrupe, omita ou renumere IDs. "
                     "Responda somente JSON no formato "
-                    '{"explicacoes":[{"id":1,"explicacao":"Texto claro."}]}.'
-                    f"\nTEMA: {topic}\nCONTEXTO POR ID: "
+                    '{"explicacoes":[{"id":1,"explicacao":"Texto claro.",'
+                    '"situacao":"aplicavel","evidencia":{"pagina":1,'
+                    '"trecho":"Frase literal do trecho candidato."}}]}. '
+                    "Para situacao incerta, evidencia pode ser null. "
+                    f"\nTEMA: {topic}\nCABEÇALHO DO DOCUMENTO: {cover}"
+                    f"\nCONTEXTO POR ID: "
                     f"{json.dumps(self._explanation_context(missing, agg, chunks or []), ensure_ascii=False)}"
                     f"\nITENS: {json.dumps(missing, ensure_ascii=False)}"
                 )
@@ -1409,9 +1443,27 @@ Regras:
                                 and row["id"] in requested_ids
                                 and isinstance(row.get("explicacao"), str)
                                 and len(row["explicacao"].split()) >= 8):
-                            explanations_by_id[row["id"]] = row["explicacao"].strip()
+                            entry = next(item for item in missing if item["id"] == row["id"])
+                            candidates = self._explanation_context([entry], agg, chunks or [])[
+                                str(row["id"])]["trechos_candidatos"]
+                            evidence = self._valid_explanation_evidence(row, candidates)
+                            status = row.get("situacao")
+                            if status not in {"aplicavel", "condicional", "incerta"}:
+                                status = "incerta"
+                            if chunks is not None and (
+                                evidence is None or status == "incerta"
+                                or not self._numeric_claims_supported(
+                                    row["explicacao"], entry["item"], evidence["trecho"]
+                                )
+                            ):
+                                result = {**entry, "situacao": "incerta", "evidencia": evidence,
+                                          "explicacao": "Item extraído sem interpretação confirmada pelos trechos selecionados; requer revisão da cláusula original."}
+                            else:
+                                result = {**entry, "situacao": status, "evidencia": evidence,
+                                          "explicacao": row["explicacao"].strip()}
+                            explanations_by_id[row["id"]] = result
                             if checkpoint is not None:
-                                stored_for_topic[str(row["id"])] = row["explicacao"].strip()
+                                stored_for_topic[str(row["id"])] = result
                     if checkpoint is not None:
                         self._save_checkpoint(checkpoint)
             missing_ids = [entry["id"] for entry in batch if entry["id"] not in explanations_by_id]
@@ -1420,10 +1472,7 @@ Regras:
                     f"Explicação incompleta em {topic}, itens {offset + 1}–"
                     f"{offset + len(batch)} (IDs faltantes: {missing_ids}); relatório não publicado."
                 )
-            explained[topic].extend([
-                {**entry, "explicacao": explanations_by_id[entry["id"]]}
-                for entry in batch
-            ])
+            explained[topic].extend([explanations_by_id[entry["id"]] for entry in batch])
             if invoked_this_task and task_index < len(tasks):
                 time.sleep(8)
 
