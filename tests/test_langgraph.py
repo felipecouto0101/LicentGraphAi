@@ -101,6 +101,36 @@ class TestLangGraphWorkflow:
         
         assert callable(node_4_document_generator)
 
+    def test_real_mode_requires_key_without_silent_fallback(self, monkeypatch):
+        from app.rag.langgraph_workflow import (
+            is_mock_mode, validate_analysis_configuration
+        )
+
+        monkeypatch.delenv("NODE3_MOCK_MODE", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        assert is_mock_mode() is False
+        with pytest.raises(ValueError, match="GROQ_API_KEY"):
+            validate_analysis_configuration()
+
+        monkeypatch.setenv("GROQ_API_KEY", "your_groq_api_key_here")
+        with pytest.raises(ValueError, match="GROQ_API_KEY"):
+            validate_analysis_configuration()
+
+    def test_demo_requires_explicit_opt_in(self, monkeypatch):
+        from app.rag.langgraph_workflow import (
+            is_mock_mode, validate_analysis_configuration
+        )
+
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("NODE3_MOCK_MODE", "true")
+        assert is_mock_mode() is True
+        validate_analysis_configuration()
+
+        monkeypatch.setenv("NODE3_MOCK_MODE", "false")
+        monkeypatch.setenv("GROQ_API_KEY", "configured-key")
+        assert is_mock_mode() is False
+        validate_analysis_configuration()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
