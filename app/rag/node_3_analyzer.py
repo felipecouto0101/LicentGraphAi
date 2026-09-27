@@ -1264,6 +1264,36 @@ Regras:
             "rag_answers": rag_answers,
         }
 
+    def process_from_node2(self, chunks: list[dict]) -> dict:
+        """Processa todos os chunks usando LLM real ou análise heurística explícita."""
+        logger.info(f"Processando {len(chunks)} chunks do Nó 2")
+
+        if not chunks:
+            return {
+                "total_chunks_processed": 0,
+                "structured_analysis": {},
+                "critical_analysis": {},
+            }
+
+        if not self.mock_mode:
+            return self._process_with_rag_llm(chunks)
+
+        # Modo de demonstração: mantém a estrutura esperada pelo workflow
+        # e pelo checklist, sem chamar a API externa.
+        structured_analysis = {
+            chunk.get("metadata", {}).get("chunk_id", i): self.extract_structured_info(chunk)
+            for i, chunk in enumerate(chunks)
+        }
+        critical_analysis = {
+            chunk.get("metadata", {}).get("chunk_id", i): self.identify_critical_points(chunk)
+            for i, chunk in enumerate(chunks)
+        }
+        return {
+            "total_chunks_processed": len(chunks),
+            "structured_analysis": structured_analysis,
+            "critical_analysis": critical_analysis,
+        }
+
     def process_complete_analysis(self, node2_output: dict) -> dict:
         """
         Processa análise completa usando saída do Nó 2.

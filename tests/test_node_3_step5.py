@@ -38,6 +38,23 @@ class TestNode3IntegrationWithNode2:
         assert "critical_analysis" in result
         assert result["total_chunks_processed"] == 2
     
+    def test_real_mode_dispatches_to_unified_llm(self, monkeypatch):
+        """O fluxo real usa a passagem única e preserva a saída para o nó 4."""
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        analyzer.mock_mode = False
+        chunks = [{"content": "Prazo: 30 dias", "section": "prazos"}]
+        expected = {
+            "total_chunks_processed": 1,
+            "structured_analysis": {},
+            "critical_analysis": {},
+            "llm_analysis": {"prazos": ["30 dias"]},
+        }
+        monkeypatch.setattr(analyzer, "_process_with_rag_llm", lambda incoming: expected if incoming is chunks else None)
+
+        assert analyzer.process_from_node2(chunks) is expected
+
     def test_complete_workflow_node2_to_node3(self):
         """Testa workflow completo Nó 2 → Nó 3."""
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer

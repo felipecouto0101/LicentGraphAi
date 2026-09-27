@@ -19,6 +19,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def is_mock_mode() -> bool:
+    """O modo de demonstração só é ativado explicitamente."""
+    return os.getenv("NODE3_MOCK_MODE", "false").strip().lower() == "true"
+
+
+def validate_analysis_configuration() -> None:
+    """Impede que uma análise real seja trocada silenciosamente por dados simulados."""
+    if is_mock_mode():
+        return
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    if not key or key == "your_groq_api_key_here":
+        raise ValueError(
+            "GROQ_API_KEY não configurada. Defina uma chave válida para análise real "
+            "ou ative NODE3_MOCK_MODE=true para demonstração."
+        )
+
+
 class LicitGraphState(TypedDict):
     """
     Estado compartilhado entre todos os nós do workflow.
@@ -101,19 +118,18 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
     Nó 3: Analisador de Requisitos (Wrapper para LangGraph)
     
     Analisa requisitos do edital usando IA.
-    Usa mock mode quando NODE3_MOCK_MODE=true no .env ou quando GROQ_API_KEY não está definida.
+    Usa demonstração somente com NODE3_MOCK_MODE=true.
     """
     logger.info("Nó 3: Iniciando análise de requisitos")
     
     try:
-        api_key = os.getenv("GROQ_API_KEY", "")
-        mock_mode_env = os.getenv("NODE3_MOCK_MODE", "true").lower()
-        mock_mode = mock_mode_env == "true" or not api_key or api_key == "your_groq_api_key_here"
+        validate_analysis_configuration()
+        mock_mode = is_mock_mode()
         persist_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db")
         collection  = os.getenv("CHROMA_COLLECTION_NAME", "licitacoes")
 
         if mock_mode:
-            logger.info("Nó 3: Usando modo mock (NODE3_MOCK_MODE=true ou GROQ_API_KEY ausente)")
+            logger.info("Nó 3: Modo de demonstração ativado explicitamente")
         else:
             logger.info("Nó 3: Usando API Groq real com RAG")
 
@@ -140,15 +156,14 @@ def node_4_document_generator(state: LicitGraphState) -> LicitGraphState:
     Nó 4: Gerador de Checklist (Wrapper para LangGraph)
     
     Gera checklist de documentos a partir da análise.
-    Usa mock mode quando NODE3_MOCK_MODE=true no .env ou quando GROQ_API_KEY não está definida.
+    Usa demonstração somente com NODE3_MOCK_MODE=true.
     """
     logger.info("Nó 4: Iniciando geração de checklist")
     
     try:
-        api_key = os.getenv("GROQ_API_KEY", "")
-        mock_mode_env = os.getenv("NODE3_MOCK_MODE", "true").lower()
-        mock_mode = mock_mode_env == "true" or not api_key or api_key == "your_groq_api_key_here"
-        
+        validate_analysis_configuration()
+        mock_mode = is_mock_mode()
+
         node4 = Node4DocumentGenerator(mock_mode=mock_mode)
         result = node4.process_from_node3(state["analysis"])
         
@@ -210,6 +225,9 @@ def run_licit_graph_pipeline(pdf_path: str, company_profile: Optional[Dict] = No
     """
     logger.info(f"Iniciando pipeline completo: {pdf_path}")
     
+    # Falha antes de processar o PDF se faltar a configuração da análise real.
+    validate_analysis_configuration()
+
     # Cria o workflow
     app = create_licit_graph_workflow()
     

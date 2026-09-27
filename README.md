@@ -71,10 +71,12 @@ pip install -r requirements.txt
 
 # 4. Configure as variáveis de ambiente
 cp .env.example .env
-# Edite .env com sua chave da API Groq e NODE3_MOCK_MODE=false
+# Edite .env com sua chave da API Groq
 ```
 
-Obtenha sua chave gratuita em: https://console.groq.com/
+Obtenha sua chave em: https://console.groq.com/
+
+Sem `GROQ_API_KEY` válida, a análise real retorna um erro de configuração antes de processar o PDF. Para testes sem API, defina explicitamente `NODE3_MOCK_MODE=true`. A interface identifica esse modo e marca os resultados como demonstração.
 
 ---
 
@@ -82,7 +84,7 @@ Obtenha sua chave gratuita em: https://console.groq.com/
 
 ```env
 GROQ_API_KEY=sua_chave_aqui
-NODE3_MOCK_MODE=false        # false = IA real | true = extração por regex (dev)
+NODE3_MOCK_MODE=false        # padrão: IA real | true: demonstração explícita
 DEFAULT_MODEL=qwen/qwen3.8-27b
 CHROMA_PERSIST_DIRECTORY=./data/vector_db
 CHROMA_COLLECTION_NAME=licitacoes
