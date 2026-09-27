@@ -89,6 +89,8 @@ class TestNode3IntegrationWithNode2:
                             lambda agg, refs: {"resumo": "Prazo [p. 3].",
                                                "requisitos": "Sem requisito.",
                                                "coverage": {}})
+        monkeypatch.setattr(analyzer, "_explain_all_requirements",
+                            lambda agg: {"participacao": [], "selecao": []})
 
         result = analyzer._process_with_rag_llm([chunk])
         assert "SENTINELA_FIM" in captured[0]
@@ -96,6 +98,49 @@ class TestNode3IntegrationWithNode2:
         assert result["explanatory_report"]["resumo"] == "Prazo [p. 3]."
         assert result["selection_process"] == ["Menor preço global"]
         assert result["structured_analysis"][0]["technical_requirements"] == ["Registro técnico"]
+
+    def test_explains_every_extracted_item_across_batches(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        calls = []
+
+        def invoke(messages):
+            prompt = messages[-1].content
+            batch = json.loads(prompt.split("ITENS: ", 1)[1])
+            calls.append(batch)
+            return SimpleNamespace(content=json.dumps({"explicacoes": [
+                {"id": row["id"], "explicacao":
+                 f"Este item trata de {row['item']}. Verifique no edital como se aplica."}
+                for row in batch
+            ]}))
+
+        monkeypatch.setattr(analyzer, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        agg = {
+            "requisitos_participacao": [f"Condição {i}" for i in range(3)],
+            "selecao": [f"Critério {i}" for i in range(12)],
+        }
+        result = analyzer._explain_all_requirements(agg)
+        assert [len(batch) for batch in calls] == [3, 5, 5, 2]
+        assert [row["item"] for row in result["selecao"]] == agg["selecao"]
+        assert [row["id"] for row in result["selecao"]] == list(range(1, 13))
+
+    def test_incomplete_explanation_fails_instead_of_dropping_an_item(self, monkeypatch):
+        import pytest
+        from types import SimpleNamespace
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        monkeypatch.setattr(analyzer, "_invoke_with_rotation", lambda messages:
+                            SimpleNamespace(content='{"explicacoes":[{"id":1,'
+                                                    '"explicacao":"Este item descreve uma condição que deve ser conferida no edital."}]}'))
+        agg = {"requisitos_participacao": [], "selecao": ["Primeiro", "Segundo"]}
+        with pytest.raises(RuntimeError, match="Explicação incompleta"):
+            analyzer._explain_all_requirements(agg)
 
     def test_failed_batch_cannot_publish_success(self, monkeypatch):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
