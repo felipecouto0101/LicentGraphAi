@@ -74,8 +74,9 @@ class TestNode3IntegrationWithNode2:
                  "section": "prazos", "metadata": {"chunk_id": 2, "page": 3}}
         captured = []
         data = {
-            "objeto": "", "documentos": [], "requisitos_participacao": [],
-            "prazos": ["30 dias"], "custos": [], "selecao": [], "entregas": [],
+            "objeto": "", "documentos": [], "requisitos_participacao": ["Registro técnico"],
+            "prazos": ["30 dias"], "custos": [],
+            "selecao": ["Menor preço global", "menor preco global!"], "entregas": [],
             "eliminacao": [], "riscos": [], "nivel_risco": "BAIXO",
         }
         def invoke(messages, *args):
@@ -93,6 +94,8 @@ class TestNode3IntegrationWithNode2:
         assert "SENTINELA_FIM" in captured[0]
         assert result["rag_sources"]["prazos"][0]["page"] == 3
         assert result["explanatory_report"]["resumo"] == "Prazo [p. 3]."
+        assert result["selection_process"] == ["Menor preço global"]
+        assert result["structured_analysis"][0]["technical_requirements"] == ["Registro técnico"]
 
     def test_failed_batch_cannot_publish_success(self, monkeypatch):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
