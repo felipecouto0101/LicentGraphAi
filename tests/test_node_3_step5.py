@@ -38,6 +38,32 @@ class TestNode3IntegrationWithNode2:
         assert "critical_analysis" in result
         assert result["total_chunks_processed"] == 2
     
+    def test_explanatory_report_is_bounded_and_excludes_document_list(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        analyzer = object.__new__(Node3RequirementAnalyzer)
+        agg = {
+            "objeto": "Serviço de manutenção",
+            "nivel_risco": "MEDIO",
+            "documentos": ["DOCUMENTO_PRIVADO_QUE_NAO_DEVE_ENTRAR"],
+            "requisitos_participacao": [f"Critério {i}" for i in range(25)],
+            "selecao": ["Menor preço"], "prazos": [], "custos": [],
+            "entregas": [], "eliminacao": [], "riscos": [],
+        }
+        captured = []
+        def fake_invoke(messages):
+            captured.append(messages[-1].content)
+            return SimpleNamespace(content='{"resumo":"Objeto e prazo a verificar.",'
+                                           '"requisitos":"A seleção usa menor preço."}')
+        monkeypatch.setattr(analyzer, "_invoke_with_rotation", fake_invoke)
+        report = analyzer._synthesize_explanatory_report(agg)
+
+        assert report["coverage"]["participacao"] == {"included": 12, "total": 25}
+        assert "Critério 0" in captured[0] and "Critério 24" in captured[0]
+        assert "DOCUMENTO_PRIVADO_QUE_NAO_DEVE_ENTRAR" not in captured[0]
+        assert report["requisitos"] == "A seleção usa menor preço."
+
     def test_real_mode_dispatches_to_unified_llm(self, monkeypatch):
         """O fluxo real usa a passagem única e preserva a saída para o nó 4."""
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
