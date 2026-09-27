@@ -74,7 +74,7 @@ class TestNode3IntegrationWithNode2:
                  "section": "prazos", "metadata": {"chunk_id": 2, "page": 3}}
         captured = []
         data = {
-            "objeto": "", "documentos": [], "requisitos_participacao": ["Registro técnico"],
+            "objeto": "", "documentos": ["Atestado técnico"], "requisitos_participacao": ["Registro técnico"],
             "prazos": ["30 dias"], "custos": [],
             "selecao": ["Menor preço global", "menor preco global!"], "entregas": [],
             "eliminacao": [], "riscos": [], "nivel_risco": "BAIXO",
@@ -98,6 +98,7 @@ class TestNode3IntegrationWithNode2:
         assert result["explanatory_report"]["resumo"] == "Prazo [p. 3]."
         assert result["selection_process"] == ["Menor preço global"]
         assert result["structured_analysis"][0]["technical_requirements"] == ["Registro técnico"]
+        assert result["llm_analysis"]["documentos_exigidos"] == ["Atestado técnico"]
 
     def test_explains_every_extracted_item_across_batches(self, monkeypatch):
         import json
