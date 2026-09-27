@@ -77,6 +77,43 @@ class TestTransientGroqFailures:
 
 
 class TestExplanationGrounding:
+    def test_literal_quote_is_required_before_publishing_interpretation(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        source = {"content": "A plataforma analisa o cadastro em até 24 horas úteis.",
+                  "metadata": {"page": 3}}
+        agg = {"requisitos_participacao": ["Cadastro na plataforma com antecedência"],
+               "selecao": []}
+
+        def reply(evidence, status="aplicavel", hours=24):
+            def invoke(messages):
+                entries = json.loads(messages[-1].content.split("ITENS: ", 1)[1])
+                return SimpleNamespace(content=json.dumps({"explicacoes": [{
+                    "id": entries[0]["id"], "situacao": status, "evidencia": evidence,
+                    "explicacao": f"O cadastro deve ser antecipado porque sua análise leva até {hours} horas úteis.",
+                }]}))
+            return invoke
+
+        valid = {"pagina": 3, "trecho": "A plataforma analisa o cadastro em até 24 horas úteis."}
+        monkeypatch.setattr(node, "_invoke_with_rotation", reply(valid))
+        result = node._explain_all_requirements(agg, chunks=[source])
+        assert result["participacao"][0]["situacao"] == "aplicavel"
+        assert result["participacao"][0]["evidencia"]["pagina"] == 3
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", reply({"pagina": 3, "trecho":
+            "A plataforma analisa o cadastro em até 48 horas úteis."}))
+        result = node._explain_all_requirements(agg, chunks=[source])
+        assert result["participacao"][0]["situacao"] == "incerta"
+        assert "24 horas" not in result["participacao"][0]["explicacao"]
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", reply(valid, hours=48))
+        result = node._explain_all_requirements(agg, chunks=[source])
+        assert result["participacao"][0]["situacao"] == "incerta"
+        assert "48 horas" not in result["participacao"][0]["explicacao"]
+
     def test_prompt_uses_relevant_source_and_related_items(self, monkeypatch):
         import json
         from types import SimpleNamespace
