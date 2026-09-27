@@ -65,13 +65,18 @@ def _render_job_progress(job_id: str, api_url: str):
 
     st.info(f"⏳ **{stage}**")
 
-    if query_total > 0:
-        query_pct = query_num / query_total
-        st.progress(query_pct, text=f"Pergunta {query_num}/{query_total}: {query_atual}")
-
-    if batch_total > 0 and query_atual:
-        batch_pct = batch_atual / batch_total
-        st.progress(batch_pct, text=f"Trecho {batch_atual}/{batch_total} analisado")
+    # O callback é emitido antes da chamada à LLM. O lote atual ainda não
+    # terminou, portanto não deve contar como concluído na barra.
+    if stage in {"Analisando edital com IA", "Explicando todos os requisitos"} and batch_total > 0:
+        completed = max(0, min(batch_atual - 1, batch_total))
+        label = "Extração" if stage == "Analisando edital com IA" else "Explicações"
+        st.progress(
+            completed / batch_total,
+            text=f"{label}: {completed}/{batch_total} lotes concluídos",
+        )
+        st.caption(f"Em andamento: lote {batch_atual}/{batch_total}" + (f" — {query_atual}" if query_atual else ""))
+    elif stage == "Redigindo resumo e requisitos":
+        st.caption("Redigindo a síntese; esta etapa ainda não tem porcentagem disponível.")
 
     if itens > 0:
         st.caption(f"✅ {itens} itens encontrados até agora")
