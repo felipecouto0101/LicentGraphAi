@@ -8,6 +8,7 @@ from typing import TypedDict, List, Dict, Optional
 from langgraph.graph import StateGraph, END
 import logging
 import os
+import uuid
 
 # Importar nós existentes
 from .node_1_reader_chunker import Node1ReaderChunker
@@ -93,15 +94,20 @@ def node_2_embeddings(state: LicitGraphState) -> LicitGraphState:
     
     try:
         node2 = Node2EmbeddingGenerator()
+        # Cada edital usa uma coleção própria: consultas não recuperam trechos
+        # de outros documentos nem colidem com IDs de execuções anteriores.
+        collection_name = f"licitacoes_{uuid.uuid4().hex}"
         result = node2.process_chunks(
             state["chunks"],
-            persist_directory="./data/vector_db"
+            collection_name=collection_name,
+            persist_directory=os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db")
         )
         
         state["embeddings"] = {
             "total_embeddings": result["total_embeddings"],
             "embedding_model": result["embedding_model"],
-            "vector_dimension": result["vector_dimension"]
+            "vector_dimension": result["vector_dimension"],
+            "collection_id": result["collection_id"]
         }
         
         logger.info(f"Nó 2: {result['total_embeddings']} embeddings gerados")
@@ -126,7 +132,9 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
         validate_analysis_configuration()
         mock_mode = is_mock_mode()
         persist_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db")
-        collection  = os.getenv("CHROMA_COLLECTION_NAME", "licitacoes")
+        collection = (state.get("embeddings") or {}).get("collection_id")
+        if not collection:
+            raise ValueError("Coleção vetorial do edital não disponível")
 
         if mock_mode:
             logger.info("Nó 3: Modo de demonstração ativado explicitamente")
