@@ -1048,7 +1048,7 @@ TRECHOS:
 Responda SOMENTE com JSON valido (sem markdown):
 {{
   "objeto": "descricao do objeto se encontrado, senao string vazia",
-  "documentos": ["nome exato de cada documento exigido encontrado, ex: Certidao Negativa de Debitos, CNPJ, Atestado Tecnico"],
+  "documentos": ["nome de cada documento ou comprovante que o edital pede ao licitante apresentar, ex: certidao, atestado, planilha ou declaracao"],
   "requisitos_participacao": ["cada requisito objetivo para participar, ex: CNPJ ativo, Registro no CREA"],
   "prazos": ["cada prazo com valor, ex: 90 dias corridos para execucao, 30 dias para pagamento"],
   "custos": ["valores e formas de pagamento encontrados"],
@@ -1061,7 +1061,9 @@ Responda SOMENTE com JSON valido (sem markdown):
 
 Regras:
 - Inclua apenas o que esta EXPLICITAMENTE nos trechos.
-- Documentos: apenas nomes de documentos, nao frases explicativas.
+- Documentos: apenas documentos/comprovantes a apresentar; nao inclua condicoes
+  de participacao, proibicoes, atividades, minutas ou anexos fornecidos pelo orgao.
+- Nao crie um documento a partir de uma obrigacao que nao pede comprovante explicito.
 - Em selecao, inclua somente etapas da disputa, julgamento e avaliacao de propostas.
 - Em requisitos_participacao, inclua condicoes de participacao e habilitacao.
 - Nao repita um mesmo fato com palavras diferentes no mesmo campo.
@@ -1452,7 +1454,7 @@ Regras:
         llm_analysis = {
             "objeto": agg["objeto"],
             "requisitos_tecnicos": agg["requisitos_participacao"],
-            "documentos_exigidos": list(dict.fromkeys(agg["documentos"] + agg["requisitos_participacao"])),
+            "documentos_exigidos": agg["documentos"],
             "prazos": agg["prazos"],
             "pontos_criticos": list(dict.fromkeys(agg["eliminacao"] + agg["riscos"])),
             "nivel_risco": max_risk,
