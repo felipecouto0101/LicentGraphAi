@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -1061,6 +1062,10 @@ Responda SOMENTE com JSON valido (sem markdown):
 Regras:
 - Inclua apenas o que esta EXPLICITAMENTE nos trechos.
 - Documentos: apenas nomes de documentos, nao frases explicativas.
+- Em selecao, inclua somente etapas da disputa, julgamento e avaliacao de propostas.
+- Em requisitos_participacao, inclua condicoes de participacao e habilitacao.
+- Nao repita um mesmo fato com palavras diferentes no mesmo campo.
+- Se trechos parecerem contraditorios, preserve as formulacoes sem escolher uma como correta.
 - Se nao ha informacao para um campo, use lista vazia ou string vazia.
 - Seja conciso: cada item em no maximo 15 palavras.
 """
@@ -1197,11 +1202,19 @@ Regras:
         max_risk = "BAIXO"
         failed_batches = []
 
+        def normalized(item):
+            text = unicodedata.normalize("NFKD", item.casefold())
+            text = "".join(c for c in text if not unicodedata.combining(c))
+            return re.sub(r"[^\w]+", " ", text).strip()
+
         def add_unique(lst, items):
+            seen = {normalized(existing) for existing in lst}
             for item in items:
                 item = item.strip()
-                if item and item not in lst:
+                key = normalized(item)
+                if key and key not in seen:
                     lst.append(item)
+                    seen.add(key)
 
         for b_idx, batch in enumerate(all_batches):
             if _progress_callback:
@@ -1361,7 +1374,7 @@ Regras:
 
         llm_analysis = {
             "objeto": agg["objeto"],
-            "requisitos_tecnicos": agg["selecao"],
+            "requisitos_tecnicos": agg["requisitos_participacao"],
             "documentos_exigidos": list(dict.fromkeys(agg["documentos"] + agg["requisitos_participacao"])),
             "prazos": agg["prazos"],
             "pontos_criticos": list(dict.fromkeys(agg["eliminacao"] + agg["riscos"])),
@@ -1371,7 +1384,7 @@ Regras:
 
         structured_analysis = {
             0: {
-                "technical_requirements": agg["selecao"],
+                "technical_requirements": agg["requisitos_participacao"],
                 "documentation": llm_analysis["documentos_exigidos"],
                 "deadlines": agg["prazos"],
                 "object_info": {"description": agg["objeto"], "quantity": None, "unit": None},
@@ -1395,6 +1408,7 @@ Regras:
             "critical_analysis": critical_analysis,
             "llm_analysis": llm_analysis,
             "rag_answers": rag_answers,
+            "selection_process": agg["selecao"],
             "rag_sources": source_refs,
             "explanatory_report": explanatory_report,
             "explanatory_error": explanatory_error,
