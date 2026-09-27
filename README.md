@@ -2,6 +2,25 @@
 
 Aplicação para organizar informações de editais em PDF. Lê o arquivo, extrai itens com a Groq, apresenta explicações em linguagem simples e separa documentos de participação, atividades da execução e anexos de consulta. **O resultado é uma análise automática para conferência, não substitui a leitura do edital.**
 
+## Arquitetura e tecnologias
+
+O processamento é um fluxo **linear de quatro nós** definido em `app/rag/langgraph_workflow.py`. O **LangGraph** usa `StateGraph` para executar os nós na ordem PDF → embeddings → análise → checklist e compartilhar entre eles o estado com os trechos, a referência à coleção vetorial, a análise, o checklist e eventuais erros. Neste projeto, o grafo não implementa agentes autônomos nem ramificações condicionais. A retomada descrita abaixo é implementada pelo nó 3 com arquivos JSON locais, e não pelo sistema de checkpoints do LangGraph.
+
+| Tecnologia | Papel no projeto |
+| --- | --- |
+| Python | Linguagem da aplicação e do pipeline. |
+| LangGraph | Orquestra os quatro nós e transmite o estado entre eles. |
+| LangChain (`langchain-groq` e `langchain-core`) | Fornece `ChatGroq` e as mensagens `SystemMessage`/`HumanMessage` usadas nas chamadas aos modelos da Groq. A extração e a busca são implementadas nos nós do projeto. |
+| Groq | Executa as chamadas de LLM para extração e redação; o modelo padrão nos nós 3 e 4 é `qwen/qwen3.8-27b`. |
+| `pdfplumber` | Lê o texto do PDF, que depois é dividido em trechos com referência à página. |
+| `sentence-transformers` | Gera embeddings dos trechos com `all-MiniLM-L6-v2` por padrão. |
+| ChromaDB | Armazena os vetores e permite recuperar trechos semelhantes para a consulta RAG. |
+| FastAPI e Uvicorn | Expõem a API de upload, consulta de jobs e status do serviço. |
+| Streamlit | Exibe o formulário de upload, o progresso e as abas do resultado. |
+| `python-dotenv` e pytest | Carregam a configuração `.env` e executam os testes, respectivamente. |
+
+O **RAG** aqui combina a indexação dos trechos do edital no ChromaDB com a recuperação por similaridade durante a análise. O nó 3 também percorre os trechos em lotes para extrair informações; a recuperação vetorial não substitui essa leitura em lotes.
+
 ## Início rápido
 
 Requer Python 3.11 ou 3.12 e uma chave da Groq para análise real. Na raiz do projeto, no PowerShell:
