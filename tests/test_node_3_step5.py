@@ -76,6 +76,64 @@ class TestTransientGroqFailures:
             analyzer._invoke_with_rotation(["message"])
 
 
+class TestExplanationGrounding:
+    def test_prompt_uses_relevant_source_and_related_items(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        prompts = []
+
+        def invoke(messages):
+            prompt = messages[-1].content
+            prompts.append(prompt)
+            entries = json.loads(prompt.split("ITENS: ", 1)[1])
+            return SimpleNamespace(content=json.dumps({"explicacoes": [
+                {"id": row["id"], "explicacao":
+                 "A regra exige cadastro correto. Os registros devem refletir os dados da empresa."}
+                for row in entries
+            ]}))
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        agg = {"requisitos_participacao": ["Dados cadastrais exatos e atualizados",
+                "Cadastro na plataforma com antecedência"], "selecao": []}
+        chunks = [{"content": "Os dados cadastrais na plataforma devem permanecer atualizados.",
+                   "metadata": {"page": 4}},
+                  {"content": "Cronograma de execução da obra.", "metadata": {"page": 9}}]
+
+        result = node._explain_all_requirements(agg, chunks=chunks)
+
+        assert len(result["participacao"]) == 2
+        assert '"pagina": 4' in prompts[0]
+        assert '"pagina": 9' not in prompts[0]
+        assert "não diga que o edital não lista suas condições" in prompts[0]
+
+    def test_old_checkpoint_keeps_extraction_and_regenerates_explanations(self, tmp_path):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        node = object.__new__(Node3RequirementAnalyzer)
+        node.checkpoint_directory = tmp_path
+        node.model_name = "modelo-teste"
+        chunks = [{"content": "Dados cadastrais atualizados", "section": "cadastro",
+                   "metadata": {"page": 1}}]
+        agg = {"requisitos_participacao": []}
+        old = node._load_checkpoint(chunks, 2, agg)
+        old["next_batch"] = 1
+        old["agg"]["requisitos_participacao"] = ["Dados cadastrais atualizados"]
+        old["explanations"]["participacao"]["1"] = "Texto genérico anterior que precisa ser refeito."
+        old.pop("explanation_version")
+        node._save_checkpoint(old)
+
+        resumed = node._load_checkpoint(chunks, 2, agg)
+
+        assert resumed["next_batch"] == 1
+        assert resumed["agg"]["requisitos_participacao"] == ["Dados cadastrais atualizados"]
+        assert resumed["explanations"] == {"participacao": {}, "selecao": {}}
+        assert resumed["explanation_version"] == node.EXPLANATION_VERSION
+
+
 class TestNode3IntegrationWithNode2:
     """Testes para integração do Nó 3 com Nó 2."""
     
@@ -162,7 +220,7 @@ class TestNode3IntegrationWithNode2:
                                                "requisitos": "Sem requisito.",
                                                "coverage": {}})
         monkeypatch.setattr(analyzer, "_explain_all_requirements",
-                            lambda agg, checkpoint=None: {"participacao": [], "selecao": []})
+                            lambda agg, checkpoint=None, chunks=None: {"participacao": [], "selecao": []})
 
         result = analyzer._process_with_rag_llm([chunk])
         assert "SENTINELA_FIM" in captured[0]
@@ -339,7 +397,7 @@ class TestNode3IntegrationWithNode2:
             monkeypatch.setattr(node, "_retrieve_rag_chunks",
                                 lambda **kwargs: {"objeto": [chunks[0]]})
             monkeypatch.setattr(node, "_explain_all_requirements",
-                                lambda agg, checkpoint: {"participacao": [], "selecao": []})
+                                lambda agg, checkpoint, chunks=None: {"participacao": [], "selecao": []})
             return node
 
         with pytest.raises(RuntimeError, match="lote 2/2"):
