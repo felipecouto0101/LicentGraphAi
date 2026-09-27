@@ -73,8 +73,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print()
-    print("FastAPI rodando em: http://127.0.0.1:8000")
-    print("Swagger UI:         http://127.0.0.1:8000/docs")
+    print("FastAPI rodando em: http://127.0.0.1:8002")
+    print("Swagger UI:         http://127.0.0.1:8002/docs")
     print()
 
     # Iniciar Streamlit
