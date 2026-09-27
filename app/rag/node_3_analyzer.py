@@ -121,10 +121,11 @@ class Node3RequirementAnalyzer:
 
     def _invoke_with_rotation(self, messages: list, sleep_between: float = 8.0):
         """
-        Invoca o LLM com rotação automática de chave em caso de 429.
-        Tenta todas as chaves disponíveis antes de desistir.
+        Rotaciona chaves ao esgotar a cota diária e tenta novamente falhas
+        temporárias do serviço, sempre com um número finito de tentativas.
         """
         keys_tried = 0
+        transient_failures = 0
         while keys_tried <= len(self._api_keys):
             try:
                 return self.llm.invoke(messages)
@@ -154,6 +155,25 @@ class Node3RequirementAnalyzer:
                         keys_tried += 1
                         continue
                 else:
+                    status = getattr(e, "status_code", None)
+                    transient = status in (500, 502, 503, 504) or (
+                        status is None and (
+                            "503" in err_str
+                            or type(e).__name__ in {
+                                "APIConnectionError", "APITimeoutError",
+                                "ConnectError", "RemoteProtocolError", "TimeoutException",
+                            }
+                        )
+                    )
+                    if transient and transient_failures < 3:
+                        delay = (5, 15, 30)[transient_failures]
+                        transient_failures += 1
+                        logger.warning(
+                            "Falha temporária da Groq (%s). Tentativa adicional %s/3 em %ss",
+                            status or type(e).__name__, transient_failures, delay,
+                        )
+                        time.sleep(delay)
+                        continue
                     raise
         raise RuntimeError("Todas as chaves API falharam.")
 
