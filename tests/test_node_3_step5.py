@@ -8,6 +8,74 @@ import pytest
 from typing import Dict, List
 
 
+class TestTransientGroqFailures:
+    def test_503_recovers_without_changing_key(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class ServerUnavailable(Exception):
+            status_code = 503
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer._api_keys = ["key"]
+        analyzer._current_key_idx = 0
+        calls = []
+        waits = []
+
+        def invoke(messages):
+            calls.append(messages)
+            if len(calls) <= 2:
+                raise ServerUnavailable("upstream connect error")
+            return SimpleNamespace(content="ok")
+
+        analyzer.llm = SimpleNamespace(invoke=invoke)
+        monkeypatch.setattr(module.time, "sleep", waits.append)
+        response = analyzer._invoke_with_rotation(["message"])
+
+        assert response.content == "ok"
+        assert len(calls) == 3
+        assert waits == [5, 15]
+        assert analyzer._current_key_idx == 0
+
+    def test_persistent_503_stops_after_bounded_retries(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class ServerUnavailable(Exception):
+            status_code = 503
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer._api_keys = ["key"]
+        calls = []
+        waits = []
+
+        def invoke(messages):
+            calls.append(messages)
+            raise ServerUnavailable("upstream connect error")
+
+        analyzer.llm = SimpleNamespace(invoke=invoke)
+        monkeypatch.setattr(module.time, "sleep", waits.append)
+        with pytest.raises(ServerUnavailable):
+            analyzer._invoke_with_rotation(["message"])
+
+        assert len(calls) == 4
+        assert waits == [5, 15, 30]
+
+    def test_other_client_errors_are_not_retried(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class BadRequest(Exception):
+            status_code = 400
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer._api_keys = ["key"]
+        analyzer.llm = SimpleNamespace(invoke=lambda messages: (_ for _ in ()).throw(BadRequest("bad request")))
+        monkeypatch.setattr(module.time, "sleep", lambda seconds: pytest.fail("unexpected retry"))
+        with pytest.raises(BadRequest):
+            analyzer._invoke_with_rotation(["message"])
+
+
 class TestNode3IntegrationWithNode2:
     """Testes para integração do Nó 3 com Nó 2."""
     
