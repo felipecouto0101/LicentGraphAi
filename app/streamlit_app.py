@@ -267,11 +267,12 @@ def display_results(result):
 
     result_data = result.get("result", {})
 
-    result_tab1, result_tab2, result_tab3, result_tab4, result_tab5 = st.tabs([
+    result_tab1, result_tab2, result_tab3, result_tab4, result_tab5, result_tab6 = st.tabs([
         "📈 Resumo",
         "❓ Perguntas Respondidas",
         "🔍 Análise de Requisitos",
         "📋 Checklist de Documentos",
+        "📁 Execução e anexos",
         "🗂 JSON Completo",
     ])
 
@@ -357,7 +358,7 @@ def display_results(result):
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Trechos extraídos",   chunks_count)
         col2.metric("Embeddings gerados",  embeddings_count)
-        col3.metric("Documentos exigidos", docs_count)
+        col3.metric("Documentos no checklist", docs_count)
         col4.metric("Seções analisadas",   analysis.get("total_chunks_processed", 0))
 
         # Nível de risco
@@ -593,9 +594,28 @@ def display_results(result):
                         cols[3].write(prazo if prazo else "—")
 
     # ──────────────────────────────────────────────────────────────
-    # TAB 5 — JSON (debug)
+    # TAB 5 — Documentos produzidos depois da contratação e anexos do órgão
     # ──────────────────────────────────────────────────────────────
     with result_tab5:
+        sections = (
+            ("Atividades e entregas previstas", analysis.get("execution_items") or []),
+            ("Documentos da etapa de execução", analysis.get("documentos_execucao") or []),
+            ("Anexos fornecidos para consulta", analysis.get("anexos_referencia") or []),
+            ("Documentos com etapa ou exigência incerta", analysis.get("pendencias_documentais") or []),
+        )
+        st.caption("Confira no PDF a etapa e as condições de cada item; os itens incertos não entram no checklist.")
+        if not any(items for _, items in sections):
+            st.info("Nenhum item separado nesta análise. Para relatórios antigos, rode uma nova análise.")
+        for label, items in sections:
+            if items:
+                with st.expander(f"{label} — {len(items)} item(ns)", expanded=False):
+                    for item in items:
+                        st.write(f"• {item}")
+
+    # ──────────────────────────────────────────────────────────────
+    # TAB 6 — JSON (debug)
+    # ──────────────────────────────────────────────────────────────
+    with result_tab6:
         st.caption("Dados brutos retornados pela API — útil para debug.")
         st.json(result)
 
