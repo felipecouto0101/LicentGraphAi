@@ -309,6 +309,7 @@ def display_results(result):
         return dedup_ordered(items)
 
     all_tech      = aggregate("technical_requirements")
+    selection_items = analysis.get("selection_process")
     all_docs_raw  = aggregate("documentation")
     all_deadlines = aggregate("deadlines")
     all_risks     = aggregate_critical("critical_points")
@@ -467,13 +468,22 @@ def display_results(result):
         if not structured:
             st.info("Análise de requisitos não disponível.")
         else:
-            # Requisitos técnicos
-            if all_tech:
-                with st.expander(f"⚙️ Requisitos Técnicos — {len(all_tech)} item(ns)", expanded=False):
-                    for i, req in enumerate(all_tech, 1):
+            # Condições de participação e habilitação (não são etapas da disputa).
+            participation_items = all_tech if selection_items is not None or not llm_analysis else []
+            if participation_items:
+                with st.expander(f"📋 Condições de participação e habilitação — {len(participation_items)} item(ns)", expanded=False):
+                    for i, req in enumerate(participation_items, 1):
                         st.write(f"**{i}.** {req}")
-            else:
-                st.info("Nenhum requisito técnico específico identificado no edital.")
+            elif selection_items is not None:
+                st.info("Nenhuma condição de participação ou habilitação identificada.")
+
+            # A saída antiga colocava seleção indevidamente em technical_requirements.
+            # Para análises antigas, mantenha a lista visível com o título correto.
+            selection_display = selection_items if selection_items is not None else (all_tech if llm_analysis else [])
+            if selection_display:
+                with st.expander(f"⚖️ Disputa, julgamento e avaliação — {len(selection_display)} item(ns)", expanded=False):
+                    for i, item in enumerate(selection_display, 1):
+                        st.write(f"**{i}.** {item}")
 
             # Prazos — todos aqui
             if all_deadlines:
