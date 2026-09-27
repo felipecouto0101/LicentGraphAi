@@ -1202,37 +1202,55 @@ Regras:
                     batch_atual=task_index,
                     batch_total=len(tasks),
                 )
-            prompt = (
-                "Explique TODOS os itens abaixo, um por um, em português simples para quem "
-                "nunca participou de uma licitação. Para cada ID, escreva 2 ou 3 frases "
-                "sobre o que o enunciado significa e o que a pessoa precisa conferir ou fazer. "
-                "Use exclusivamente o texto do item: não acrescente prazos, percentuais, "
-                "documentos, procedimentos, conclusões jurídicas ou páginas ausentes. "
-                "Se o item não disser como algo funciona, deixe claro que é preciso conferir "
-                "os detalhes no edital. Se houver ambiguidade, explique-a sem decidir qual "
-                "regra se aplica. Não agrupe, omita ou renumere IDs. "
-                "Responda somente JSON no formato "
-                '{"explicacoes":[{"id":1,"explicacao":"Texto claro."}]}.'
-                f"\nTEMA: {topic}\nITENS: {json.dumps(batch, ensure_ascii=False)}"
-            )
-            response = self._invoke_with_rotation([
-                SystemMessage(content="Responda apenas JSON válido com todos os IDs recebidos."),
-                HumanMessage(content=prompt),
-            ])
-            parsed = self._parse_llm_json(response.content)
-            rows = parsed.get("explicacoes") if isinstance(parsed, dict) else None
-            expected_ids = {entry["id"] for entry in batch}
-            if (not isinstance(rows, list) or len(rows) != len(batch)
-                    or any(not isinstance(row, dict) or type(row.get("id")) is not int
-                           or not isinstance(row.get("explicacao"), str)
-                           or len(row["explicacao"].split()) < 8
-                           for row in rows)
-                    or {row["id"] for row in rows} != expected_ids):
+            explanations_by_id = {}
+            for attempt in range(3):
+                missing = [entry for entry in batch if entry["id"] not in explanations_by_id]
+                if not missing:
+                    break
+                if attempt:
+                    logger.warning(
+                        "Explicações faltantes em %s: IDs %s. Tentativa %s/3",
+                        topic, [entry["id"] for entry in missing], attempt + 1,
+                    )
+                    if _progress_callback:
+                        _progress_callback(
+                            stage="Explicando todos os requisitos",
+                            query_atual=f"{topic}: repetindo IDs {[entry['id'] for entry in missing]} ({attempt + 1}/3)",
+                        )
+                    time.sleep(8)
+                prompt = (
+                    "Explique TODOS os itens abaixo, um por um, em português simples para quem "
+                    "nunca participou de uma licitação. Para cada ID, escreva 2 ou 3 frases "
+                    "sobre o que o enunciado significa e o que a pessoa precisa conferir ou fazer. "
+                    "Use exclusivamente o texto do item: não acrescente prazos, percentuais, "
+                    "documentos, procedimentos, conclusões jurídicas ou páginas ausentes. "
+                    "Se o item não disser como algo funciona, deixe claro que é preciso conferir "
+                    "os detalhes no edital. Se houver ambiguidade, explique-a sem decidir qual "
+                    "regra se aplica. Não agrupe, omita ou renumere IDs. "
+                    "Responda somente JSON no formato "
+                    '{"explicacoes":[{"id":1,"explicacao":"Texto claro."}]}.'
+                    f"\nTEMA: {topic}\nITENS: {json.dumps(missing, ensure_ascii=False)}"
+                )
+                response = self._invoke_with_rotation([
+                    SystemMessage(content="Responda apenas JSON válido com todos os IDs recebidos."),
+                    HumanMessage(content=prompt),
+                ])
+                parsed = self._parse_llm_json(response.content)
+                rows = parsed.get("explicacoes") if isinstance(parsed, dict) else None
+                requested_ids = {entry["id"] for entry in missing}
+                if isinstance(rows, list):
+                    for row in rows:
+                        if (isinstance(row, dict) and type(row.get("id")) is int
+                                and row["id"] in requested_ids
+                                and isinstance(row.get("explicacao"), str)
+                                and len(row["explicacao"].split()) >= 8):
+                            explanations_by_id[row["id"]] = row["explicacao"].strip()
+            missing_ids = [entry["id"] for entry in batch if entry["id"] not in explanations_by_id]
+            if missing_ids:
                 raise RuntimeError(
                     f"Explicação incompleta em {topic}, itens {offset + 1}–"
-                    f"{offset + len(batch)}; relatório não publicado."
+                    f"{offset + len(batch)} (IDs faltantes: {missing_ids}); relatório não publicado."
                 )
-            explanations_by_id = {row["id"]: row["explicacao"].strip() for row in rows}
             explained[topic].extend([
                 {**entry, "explicacao": explanations_by_id[entry["id"]]}
                 for entry in batch
