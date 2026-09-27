@@ -94,7 +94,7 @@ class TestNode3IntegrationWithNode2:
                                                "requisitos": "Sem requisito.",
                                                "coverage": {}})
         monkeypatch.setattr(analyzer, "_explain_all_requirements",
-                            lambda agg: {"participacao": [], "selecao": []})
+                            lambda agg, checkpoint=None: {"participacao": [], "selecao": []})
 
         result = analyzer._process_with_rag_llm([chunk])
         assert "SENTINELA_FIM" in captured[0]
@@ -177,6 +177,109 @@ class TestNode3IntegrationWithNode2:
         })
         assert requested == [[1, 2, 3], [2, 3]]
         assert [row["id"] for row in result["participacao"]] == [1, 2, 3]
+
+    def test_resume_after_failed_explanation_reuses_scan_and_completed_ids(
+        self, monkeypatch, tmp_path
+    ):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        chunk = {"content": "Atestado exigido na habilitação", "section": "documentacao",
+                 "metadata": {"chunk_id": 0, "page": 2}}
+        extraction = {
+            "objeto": "", "documentos": ["Atestado"], "documentos_execucao": [],
+            "anexos_referencia": [], "pendencias_documentais": [],
+            "requisitos_participacao": ["Condição A", "Condição B"],
+            "prazos": [], "custos": [], "selecao": [], "entregas": [],
+            "eliminacao": [], "riscos": [], "nivel_risco": "BAIXO",
+        }
+        calls = {"scan": 0, "ids": []}
+        allow_completion = False
+
+        def invoke(messages, *args):
+            prompt = messages[-1].content
+            if "ITENS: " not in prompt:
+                calls["scan"] += 1
+                return SimpleNamespace(content=json.dumps(extraction))
+            entries = json.loads(prompt.split("ITENS: ", 1)[1])
+            ids = [entry["id"] for entry in entries]
+            calls["ids"].append(ids)
+            answered = entries if allow_completion else entries[:1] if ids == [1, 2] else []
+            return SimpleNamespace(content=json.dumps({"explicacoes": [
+                {"id": entry["id"], "explicacao":
+                 "Este item descreve uma condição que precisa ser conferida no edital."}
+                for entry in answered
+            ]}))
+
+        def analyzer():
+            node = object.__new__(Node3RequirementAnalyzer)
+            node.checkpoint_directory = tmp_path
+            node.model_name = "modelo-teste"
+            monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+            monkeypatch.setattr(node, "_retrieve_rag_chunks",
+                                lambda **kwargs: {"participacao": [chunk]})
+            monkeypatch.setattr(node, "_synthesize_explanatory_report",
+                                lambda agg, refs: {"resumo": "Resumo", "requisitos": "Requisitos"})
+            return node
+
+        with pytest.raises(RuntimeError, match="IDs faltantes"):
+            analyzer()._process_with_rag_llm([chunk])
+        assert calls["scan"] == 1
+        assert calls["ids"] == [[1, 2], [2], [2]]
+        assert list(tmp_path.glob("*.json"))
+
+        allow_completion = True
+        result = analyzer()._process_with_rag_llm([chunk])
+        assert calls["scan"] == 1
+        assert calls["ids"][-1] == [2]
+        assert len(result["detailed_explanations"]["participacao"]) == 2
+
+    def test_scan_checkpoint_skips_batches_already_completed(self, monkeypatch, tmp_path):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        chunks = [
+            {"content": f"Trecho {i}", "section": "outros", "metadata": {"page": 1}}
+            for i in range(6)
+        ]
+        extraction = {
+            "objeto": "", "documentos": [], "documentos_execucao": [],
+            "anexos_referencia": [], "pendencias_documentais": [],
+            "requisitos_participacao": [], "prazos": [], "custos": [],
+            "selecao": [], "entregas": [], "eliminacao": [], "riscos": [],
+            "nivel_risco": "BAIXO",
+        }
+        prompts = []
+        def invoke(messages, *args):
+            text = messages[-1].content
+            prompts.append(text)
+            if "Trecho 5" in text and len(prompts) == 2:
+                raise RuntimeError("serviço temporariamente indisponível")
+            return SimpleNamespace(content=json.dumps(extraction))
+
+        def analyzer():
+            node = object.__new__(Node3RequirementAnalyzer)
+            node.checkpoint_directory = tmp_path
+            node.model_name = "modelo-teste"
+            monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+            monkeypatch.setattr(node, "_retrieve_rag_chunks",
+                                lambda **kwargs: {"objeto": [chunks[0]]})
+            monkeypatch.setattr(node, "_explain_all_requirements",
+                                lambda agg, checkpoint: {"participacao": [], "selecao": []})
+            return node
+
+        with pytest.raises(RuntimeError, match="lote 2/2"):
+            analyzer()._process_with_rag_llm(chunks)
+        analyzer()._process_with_rag_llm(chunks)
+        assert len(prompts) == 3
+        assert "Trecho 0" in prompts[0]
+        assert "Trecho 5" in prompts[1] and "Trecho 5" in prompts[2]
 
     def test_failed_batch_cannot_publish_success(self, monkeypatch):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
