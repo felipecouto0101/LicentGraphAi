@@ -97,7 +97,7 @@ O resumo usa uma amostra dos itens extraídos e informa sua cobertura. As explic
 
 Após o upload, a interface acompanha um job em segundo plano. A barra indica **lotes concluídos na etapa atual**; não é uma porcentagem global. A API também informa o estado em `GET /job/{job_id}`. `GET /status` verifica a configuração do serviço, não o progresso do job.
 
-A Groq pode responder `429 Too Many Requests`. O cliente tenta novamente e há esperas entre lotes, mas o intervalo fixo não garante disponibilidade da cota de requisições ou de tokens. Uma falha definitiva aparece no job. Não há tentativa infinita de completar uma explicação.
+A Groq pode responder `429 Too Many Requests` ou falhar temporariamente com `503 Service Unavailable`. O cliente tenta novamente e há esperas entre lotes. Em falhas temporárias de conexão ou HTTP 500/502/503/504, o nó 3 faz até três tentativas adicionais com esperas de 5, 15 e 30 segundos; se persistir, o job encerra com erro e o checkpoint permite iniciar outro job do mesmo PDF sem repetir os lotes já concluídos. O intervalo fixo não garante disponibilidade da cota de requisições ou de tokens. Não há tentativa infinita.
 
 Após cada lote de extração e cada explicação válida, o nó 3 salva um checkpoint em `data/checkpoints/`. Se você iniciar **outra análise do mesmo PDF** com o mesmo modelo e a mesma versão do pipeline, ele reaproveita as chamadas concluídas e continua nos itens faltantes. A leitura do PDF e a indexação vetorial são executadas novamente. Se o conteúdo, o modelo ou a versão do checkpoint mudar, a extração começa de novo. Jobs da API existem apenas na memória do processo; o ID antigo deixa de funcionar após reiniciar a API, mas os checkpoints permanecem no disco.
 
