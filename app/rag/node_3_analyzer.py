@@ -1048,7 +1048,10 @@ TRECHOS:
 Responda SOMENTE com JSON valido (sem markdown):
 {{
   "objeto": "descricao do objeto se encontrado, senao string vazia",
-  "documentos": ["nome de cada documento ou comprovante que o edital pede ao licitante apresentar, ex: certidao, atestado, planilha ou declaracao"],
+  "documentos": ["documentos que o licitante deve apresentar na proposta ou habilitacao, ex: certidao, atestado ou planilha"],
+  "documentos_execucao": ["documentos a produzir ou entregar somente apos a contratacao, se a etapa estiver explicita"],
+  "anexos_referencia": ["anexos e documentos fornecidos pelo orgao para consulta, sem pedido de entrega pelo licitante"],
+  "pendencias_documentais": ["documentos citados cuja etapa ou exigencia de entrega nao ficou clara nos trechos"],
   "requisitos_participacao": ["cada requisito objetivo para participar, ex: CNPJ ativo, Registro no CREA"],
   "prazos": ["cada prazo com valor, ex: 90 dias corridos para execucao, 30 dias para pagamento"],
   "custos": ["valores e formas de pagamento encontrados"],
@@ -1061,8 +1064,10 @@ Responda SOMENTE com JSON valido (sem markdown):
 
 Regras:
 - Inclua apenas o que esta EXPLICITAMENTE nos trechos.
-- Documentos: apenas documentos/comprovantes a apresentar; nao inclua condicoes
-  de participacao, proibicoes, atividades, minutas ou anexos fornecidos pelo orgao.
+- Classifique cada documento em UMA das quatro listas: entrega na proposta/habilitacao,
+  entrega apos contratacao, anexo fornecido pelo orgao ou etapa incerta.
+- Projeto Basico, minutas e anexos para consulta nao sao documentos do checklist.
+- Condicoes, proibicoes e atividades vao em requisitos_participacao, eliminacao ou entregas.
 - Nao crie um documento a partir de uma obrigacao que nao pede comprovante explicito.
 - Em selecao, inclua somente etapas da disputa, julgamento e avaliacao de propostas.
 - Em requisitos_participacao, inclua condicoes de participacao e habilitacao.
@@ -1265,6 +1270,9 @@ Regras:
         agg = {
             "objeto": "",
             "documentos": [],
+            "documentos_execucao": [],
+            "anexos_referencia": [],
+            "pendencias_documentais": [],
             "requisitos_participacao": [],
             "prazos": [],
             "custos": [],
@@ -1309,7 +1317,8 @@ Regras:
                     [system_msg, HumanMessage(content=prompt)], SLEEP_BETWEEN
                 )
                 parsed = self._parse_llm_json(response.content)
-                fields = ("documentos", "requisitos_participacao", "prazos",
+                fields = ("documentos", "documentos_execucao", "anexos_referencia",
+                          "pendencias_documentais", "requisitos_participacao", "prazos",
                           "custos", "selecao", "entregas", "eliminacao", "riscos")
                 if any(not isinstance(parsed.get(field), list) or
                        any(not isinstance(item, str) for item in parsed[field])
@@ -1319,7 +1328,8 @@ Regras:
                 if not agg["objeto"] and parsed.get("objeto"):
                     agg["objeto"] = parsed["objeto"]
 
-                for field in ["documentos", "requisitos_participacao", "prazos",
+                for field in ["documentos", "documentos_execucao", "anexos_referencia",
+                               "pendencias_documentais", "requisitos_participacao", "prazos",
                                "custos", "selecao", "entregas", "eliminacao", "riscos"]:
                     add_unique(agg[field], parsed.get(field, []))
 
@@ -1347,6 +1357,24 @@ Regras:
             )
 
         agg["nivel_risco"] = max_risk
+
+        # O mesmo nome pode surgir em lotes diferentes com etapas conflitantes.
+        # Deixe-o para conferência, em vez de publicá-lo como entrega do licitante.
+        document_fields = ("documentos", "documentos_execucao", "anexos_referencia",
+                           "pendencias_documentais")
+        owners = {}
+        originals = {}
+        for field in document_fields:
+            for item in agg[field]:
+                key = normalized(item)
+                owners.setdefault(key, set()).add(field)
+                originals.setdefault(key, item)
+        conflicts = {key for key, fields in owners.items() if len(fields) > 1}
+        if conflicts:
+            for field in document_fields:
+                agg[field] = [item for item in agg[field] if normalized(item) not in conflicts]
+            add_unique(agg["pendencias_documentais"],
+                       [originals[key] for key in originals if key in conflicts])
 
         # A recuperação temática consulta somente a coleção deste edital.
         # Os trechos e páginas acompanham o relatório para conferência.
@@ -1436,8 +1464,8 @@ Regras:
                 "observacao": "",
             },
             "documentos": {
-                "label": "Quais documentos sao exigidos?",
-                "resposta": f"{len(agg['documentos'])} documentos identificados." if agg["documentos"] else "Nenhum documento identificado.",
+                "label": "Documentos para proposta ou habilitação",
+                "resposta": f"{len(agg['documentos'])} documentos candidatos; confirme as exigências no edital." if agg["documentos"] else "Nenhum documento de proposta ou habilitação identificado.",
                 "detalhes": agg["documentos"],
                 "nivel_risco": "BAIXO",
                 "observacao": "",
@@ -1488,6 +1516,10 @@ Regras:
             "llm_analysis": llm_analysis,
             "rag_answers": rag_answers,
             "selection_process": agg["selecao"],
+            "execution_items": agg["entregas"],
+            "documentos_execucao": agg["documentos_execucao"],
+            "anexos_referencia": agg["anexos_referencia"],
+            "pendencias_documentais": agg["pendencias_documentais"],
             "detailed_explanations": detailed_explanations,
             "rag_sources": source_refs,
             "explanatory_report": explanatory_report,
