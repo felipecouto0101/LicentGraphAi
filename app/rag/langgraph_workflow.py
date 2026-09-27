@@ -12,7 +12,6 @@ import uuid
 
 # Importar nós existentes
 from .node_1_reader_chunker import Node1ReaderChunker
-from .node_2_embeddings import Node2EmbeddingGenerator
 from .node_3_analyzer import Node3RequirementAnalyzer
 from .node_4_document_generator import Node4DocumentGenerator
 
@@ -93,6 +92,10 @@ def node_2_embeddings(state: LicitGraphState) -> LicitGraphState:
     logger.info("Nó 2: Iniciando geração de embeddings")
     
     try:
+        # Carrega sentence-transformers e suas dependências somente quando um job
+        # chega ao Nó 2; /status não precisa aguardar esse import pesado.
+        from .node_2_embeddings import Node2EmbeddingGenerator
+
         node2 = Node2EmbeddingGenerator()
         # Cada edital usa uma coleção própria: consultas não recuperam trechos
         # de outros documentos nem colidem com IDs de execuções anteriores.
