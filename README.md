@@ -1,121 +1,82 @@
-# LicitGraphAi — Analisador Autônomo de Editais de Licitação
+# LicentGraphAi
 
-Sistema inteligente para análise automática de editais de licitação pública (Lei 14.133/2021). Faz upload de um PDF, extrai o texto, gera embeddings, consulta o banco vetorial via RAG e usa IA para responder perguntas objetivas sobre o edital.
+Aplicação para organizar informações de editais em PDF. Lê o arquivo, extrai itens com a Groq, apresenta explicações em linguagem simples e separa documentos de participação, atividades da execução e anexos de consulta. **O resultado é uma análise automática para conferência, não substitui a leitura do edital.**
 
----
+## Início rápido
 
-## Como funciona
+Requer Python 3.11 ou 3.12 e uma chave da Groq para análise real. Na raiz do projeto, no PowerShell:
 
-```
-PDF → Extração de texto → Chunks → Embeddings (ChromaDB)
-                                          ↓
-                              Busca vetorial por 8 queries temáticas
-                                          ↓
-                              Chunks relevantes → LLM (Groq)
-                                          ↓
-                              Relatório estruturado por pergunta
-```
-
-### Pipeline de nós (LangGraph)
-
-| Nó | Responsabilidade |
-|----|-----------------|
-| **Nó 1** | Lê o PDF, limpa o texto e fragmenta em chunks por seção |
-| **Nó 2** | Gera embeddings com `sentence-transformers` e armazena no ChromaDB |
-| **Nó 3** | Consulta RAG: busca os chunks mais relevantes por query temática e envia ao LLM |
-| **Nó 4** | Categoriza os documentos exigidos (habilitação, fiscal, técnica, etc.) em checklist |
-
-### Perguntas respondidas pelo RAG
-
-1. Posso participar? *(requisitos de habilitação)*
-2. Quais são os prazos?
-3. Quanto custa e como pago?
-4. Como será a seleção ou avaliação?
-5. O que devo entregar ou produzir?
-6. Quais são as regras de eliminação?
-7. Quais documentos são exigidos?
-8. Pontos críticos e riscos
-
-Para cada pergunta, o sistema busca os chunks mais relevantes no ChromaDB por similaridade vetorial e os envia ao LLM com um prompt focado — sem processar o edital inteiro de uma vez.
-
----
-
-## Stack
-
-- **Python 3.11+**
-- **LangGraph** — orquestração do pipeline com estado compartilhado
-- **LangChain** — chunking e integração com modelos
-- **pdfplumber** — extração de texto de PDFs
-- **sentence-transformers** (`all-MiniLM-L6-v2`) — geração de embeddings
-- **ChromaDB** — banco vetorial para busca semântica
-- **Groq API** + **Qwen 3.8 27B** — modelo LLM para análise
-- **FastAPI** — API REST para upload e processamento
-- **Streamlit** — interface web
-
----
-
-## Instalação
-
-```bash
-# 1. Clone o repositório
-git clone <repo>
-cd LicitGraphAi
-
-# 2. Crie e ative o ambiente virtual
-python -m venv venv
-venv\Scripts\activate      # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# 3. Instale as dependências
-pip install -r requirements.txt
-
-# 4. Configure as variáveis de ambiente
-cp .env.example .env
-# Edite .env com sua chave da API Groq
+```powershell
+git clone https://github.com/felipecouto0101/LicentGraphAi.git
+cd LicentGraphAi
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Obtenha sua chave em: https://console.groq.com/
+Edite o `.env` e substitua `your_groq_api_key_here` pela sua chave em `GROQ_API_KEY`. Depois inicie os dois serviços:
 
-Sem `GROQ_API_KEY` válida, a análise real retorna um erro de configuração antes de processar o PDF. Para testes sem API, defina explicitamente `NODE3_MOCK_MODE=true`. A interface identifica esse modo e marca os resultados como demonstração.
-
----
-
-## Configuração (.env)
-
-```env
-GROQ_API_KEY=sua_chave_aqui
-NODE3_MOCK_MODE=false        # padrão: IA real | true: demonstração explícita
-DEFAULT_MODEL=qwen/qwen3.8-27b
-CHROMA_PERSIST_DIRECTORY=./data/vector_db
-CHROMA_COLLECTION_NAME=licitacoes
-```
-
----
-
-## Uso
-
-### Interface web (recomendado)
-
-```bash
+```powershell
 python start_app.py
 ```
 
-Aguarde as mensagens de inicialização (~25s no primeiro start por conta do carregamento dos modelos).
+Abra **http://localhost:8501** para usar a interface. A documentação da API fica em **http://127.0.0.1:8002/docs**. O primeiro início pode demorar enquanto o modelo de embeddings é carregado.
 
-- Streamlit: http://localhost:8501
-- API Swagger: http://127.0.0.1:8000/docs
+Se preferir terminais separados, inicie a API e depois o Streamlit:
 
-Ou inicie manualmente em dois terminais:
-
-```bash
-# Terminal 1
-python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000
-
-# Terminal 2
-streamlit run app/streamlit_app.py
+```powershell
+python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002
+python -m streamlit run app/streamlit_app.py
 ```
 
-### Programático
+No Linux ou macOS, ative o ambiente com `source .venv/bin/activate` e crie o `.env` com `cp .env.example .env`.
+
+## Configuração
+
+| Variável | Uso |
+| --- | --- |
+| `GROQ_API_KEY` | Obrigatória para análise real. |
+| `GROQ_API_KEY_2` a `GROQ_API_KEY_5` | Chaves adicionais opcionais; a rotação é usada quando uma chave esgota a cota diária. |
+| `NODE3_MOCK_MODE` | `false` por padrão; `true` gera dados de demonstração sem chamar a Groq. |
+| `CHROMA_PERSIST_DIRECTORY` | Diretório do banco vetorial; padrão `./data/vector_db`. |
+| `LICIT_CHECKPOINT_DIR` | Diretório de checkpoints locais; padrão `./data/checkpoints`. |
+
+Copie `.env.example` para `.env`; o arquivo `.env` é ignorado pelo Git. O modelo da Groq e o modelo de embeddings são definidos no código dos respectivos nós. As variáveis antigas `DEFAULT_MODEL`, `CHROMA_COLLECTION_NAME` e `API_PORT` não controlam este fluxo.
+
+Para conferir o modo ativo, abra `http://127.0.0.1:8002/status`. O modo de demonstração é sinalizado na interface e não deve ser usado como análise de um edital real.
+
+## Como a análise funciona
+
+1. **Nó 1 — PDF:** extrai texto com `pdfplumber` e divide o conteúdo em trechos, preservando o número físico da página. PDFs sem texto extraível podem exigir OCR antes do uso.
+2. **Nó 2 — embeddings:** codifica os trechos com `sentence-transformers` e cria uma coleção ChromaDB separada para cada execução.
+3. **Nó 3 — extração e explicação:** envia os trechos em lotes à Groq; busca trechos relacionados no ChromaDB para ajudar na conferência; escreve resumo e requisitos em parágrafos; depois explica **cada item extraído** de participação e seleção em lotes de cinco. Verifica IDs e repete apenas os faltantes até duas vezes. Se ainda houver lacunas, o job termina com erro.
+4. **Nó 4 — checklist:** organiza os candidatos a documentos para proposta ou habilitação. Documentos da execução, anexos fornecidos pelo órgão e itens de etapa incerta ficam separados. Se o nó 3 falhar, o nó 4 é ignorado.
+
+O resumo usa uma amostra dos itens extraídos e informa sua cobertura. As explicações item a item percorrem todos os itens **identificados pela extração**. Isso não garante que todas as cláusulas do PDF tenham sido encontradas. Trechos recuperados por similaridade são pistas para verificação; não provam automaticamente cada conclusão.
+
+### Abas do resultado
+
+| Aba | Conteúdo |
+| --- | --- |
+| Resumo | Visão geral, riscos, alguns prazos e trechos do PDF com página para conferência. |
+| Perguntas respondidas | Itens extraídos por tema e trechos relacionados. |
+| Análise de requisitos | Condições de participação, disputa, julgamento, prazos e explicações item a item. |
+| Checklist de documentos | Candidatos a documentos da proposta/habilitação, com duplicatas comuns removidas. A obrigatoriedade aparece como **A confirmar** quando não há evidência específica. |
+| Execução e anexos | Atividades e entregas, documentos após a contratação, anexos para consulta e itens de etapa incerta. |
+| JSON completo | Dados brutos da análise, para diagnóstico. |
+
+## Progresso, limites e retomada
+
+Após o upload, a interface acompanha um job em segundo plano. A barra indica **lotes concluídos na etapa atual**; não é uma porcentagem global. A API também informa o estado em `GET /job/{job_id}`. `GET /status` verifica a configuração do serviço, não o progresso do job.
+
+A Groq pode responder `429 Too Many Requests`. O cliente tenta novamente e há esperas entre lotes, mas o intervalo fixo não garante disponibilidade da cota de requisições ou de tokens. Uma falha definitiva aparece no job. Não há tentativa infinita de completar uma explicação.
+
+Após cada lote de extração e cada explicação válida, o nó 3 salva um checkpoint em `data/checkpoints/`. Se você iniciar **outra análise do mesmo PDF** com o mesmo modelo e a mesma versão do pipeline, ele reaproveita as chamadas concluídas e continua nos itens faltantes. A leitura do PDF e a indexação vetorial são executadas novamente. Se o conteúdo, o modelo ou a versão do checkpoint mudar, a extração começa de novo. Jobs da API existem apenas na memória do processo; o ID antigo deixa de funcionar após reiniciar a API, mas os checkpoints permanecem no disco.
+
+Os checkpoints podem conter conteúdo extraído do edital, ficam só na sua máquina e são ignorados pelo Git. Para forçar uma análise completamente nova, limpe `data/checkpoints/` antes de enviar o PDF; isso também descarta a retomada de outros editais. As coleções ChromaDB por execução persistem no disco e ainda não possuem limpeza automática.
+
+## Uso direto em Python
 
 ```python
 from dotenv import load_dotenv
@@ -123,60 +84,33 @@ load_dotenv()
 
 from app.rag.langgraph_workflow import run_licit_graph_pipeline
 
-result = run_licit_graph_pipeline("data/raw/uploads/edital.pdf")
+state = run_licit_graph_pipeline("data/raw/uploads/edital.pdf")
+if state.get("error"):
+    raise RuntimeError(state["error"])
 
-# Respostas RAG por pergunta
-for key, answer in result["analysis"]["rag_answers"].items():
-    print(f"\n{answer['label']}")
-    print(answer["resposta"])
-
-# Checklist de documentos
-print(result["checklist"]["resumo"])
+print(state["analysis"]["explanatory_report"])
+print(state["checklist"]["resumo"])
 ```
-
----
-
-## Estrutura do projeto
-
-```
-LicitGraphAi/
-├── app/
-│   ├── api/
-│   │   └── main.py               # FastAPI: endpoints /upload, /analyze, /status
-│   ├── rag/
-│   │   ├── pdf_reader.py         # Extração e limpeza de texto do PDF
-│   │   ├── text_chunker.py       # Fragmentação por parágrafos/seções
-│   │   ├── node_1_reader_chunker.py
-│   │   ├── node_2_embeddings.py  # Embeddings + ChromaDB
-│   │   ├── node_3_analyzer.py    # RAG + LLM (Groq)
-│   │   ├── node_4_document_generator.py  # Checklist categorizado
-│   │   └── langgraph_workflow.py # Orquestração completa
-│   └── streamlit_app.py          # Interface web
-├── data/
-│   ├── raw/uploads/              # PDFs enviados (ignorado pelo git)
-│   ├── processed/                # Dados processados (ignorado pelo git)
-│   └── vector_db/                # ChromaDB (ignorado pelo git)
-├── tests/                        # Testes automatizados
-├── examples/                     # Scripts de exemplo
-├── docs/
-├── start_app.py                  # Inicia FastAPI + Streamlit
-├── .env.example
-└── requirements.txt
-```
-
----
 
 ## Testes
 
-```bash
-pytest tests/ -v
+```powershell
+python -m pytest tests/ -v
 ```
 
----
+Há testes unitários com respostas simuladas para extração, páginas, classificação, explicações e retomada de checkpoints. Eles não comprovam a qualidade da redação nem a correção das exigências de um edital real; valide um PDF conhecido antes de usar o relatório para tomar decisões.
 
-## Desenvolvimento
+## Estrutura principal
 
-```bash
-black app/
-ruff check app/
+```text
+app/api/main.py                  API FastAPI e jobs
+app/rag/pdf_reader.py            Extração de texto do PDF
+app/rag/node_1_reader_chunker.py Páginas e trechos
+app/rag/node_2_embeddings.py     Embeddings e ChromaDB
+app/rag/node_3_analyzer.py       Extração, RAG, explicações e checkpoints
+app/rag/node_4_document_generator.py Checklist
+app/rag/langgraph_workflow.py    Orquestração
+app/streamlit_app.py             Interface
+start_app.py                     Inicia API e interface
+tests/                           Testes
 ```
