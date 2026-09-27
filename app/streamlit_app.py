@@ -17,7 +17,67 @@ st.set_page_config(
 )
 
 # URL da API FastAPI
-API_URL = "http://127.0.0.1:8000"
+API_URL = "http://127.0.0.1:8002"
+
+
+def _render_job_progress(job_id: str, api_url: str):
+    """Faz polling do job e renderiza o progresso em tempo real."""
+    import time as _time
+
+    try:
+        r = requests.get(f"{api_url}/job/{job_id}", timeout=5)
+        if r.status_code != 200:
+            st.error("Erro ao consultar progresso.")
+            return
+        job = r.json()
+    except Exception as e:
+        st.warning(f"Aguardando resposta da API... ({e})")
+        _time.sleep(3)
+        st.rerun()
+        return
+
+    status = job.get("status", "")
+    prog   = job.get("progress", {})
+
+    if status == "done":
+        # Análise concluída — armazena resultado e rerenderiza
+        st.session_state["result"] = {"result": job.get("result", {})}
+        st.session_state.pop("job_id", None)
+        st.rerun()
+        return
+
+    if status == "error":
+        st.error(f"❌ Erro na análise: {job.get('error', 'desconhecido')}")
+        st.session_state.pop("job_id", None)
+        return
+
+    # Status running / queued — mostra progresso
+    stage       = prog.get("stage", "Processando...")
+    query_atual = prog.get("query_atual", "")
+    query_num   = prog.get("query_num", 0)
+    query_total = prog.get("query_total", 0)
+    batch_atual = prog.get("batch_atual", 0)
+    batch_total = prog.get("batch_total", 0)
+    itens       = prog.get("itens_encontrados", 0)
+
+    st.info(f"⏳ **{stage}**")
+
+    if query_total > 0:
+        query_pct = query_num / query_total
+        st.progress(query_pct, text=f"Pergunta {query_num}/{query_total}: {query_atual}")
+
+    if batch_total > 0 and query_atual:
+        batch_pct = batch_atual / batch_total
+        st.progress(batch_pct, text=f"Trecho {batch_atual}/{batch_total} analisado")
+
+    if itens > 0:
+        st.caption(f"✅ {itens} itens encontrados até agora")
+
+    st.caption("A análise continua em background. Esta página atualiza automaticamente a cada 5s.")
+
+    # Auto-refresh a cada 5 segundos
+    _time.sleep(5)
+    st.rerun()
 
 
 def main():
@@ -59,57 +119,84 @@ def main():
         # Botão de análise
         if uploaded_file is not None:
             st.info(f"Arquivo selecionado: {uploaded_file.name}")
-            
+
             if st.button("🚀 Iniciar Análise", type="primary"):
-                with st.spinner("Processando edital... Isso pode levar alguns minutos."):
-                    try:
-                        # Enviar arquivo para análise
-                        files = {"file": uploaded_file}
-                        data = {}
-                        if company_profile:
-                            data["company_profile"] = json.dumps(company_profile)
-                        
-                        response = requests.post(
-                            f"{api_url}/analyze/upload",
-                            files=files,
-                            data=data
-                        )
-                        
-                        if response.status_code == 200:
-                            result = response.json()
-                            st.success("✅ Análise concluída com sucesso!")
-                            display_results(result)
-                        else:
-                            st.error(f"❌ Erro na análise: {response.text}")
-                    
-                    except requests.exceptions.ConnectionError:
-                        st.error("❌ Não foi possível conectar à API. Verifique se o servidor está rodando.")
-                    except Exception as e:
-                        st.error(f"❌ Erro: {str(e)}")
-        else:
+                try:
+                    files = {"file": uploaded_file}
+                    data = {}
+                    if company_profile:
+                        data["company_profile"] = json.dumps(company_profile)
+
+                    response = requests.post(
+                        f"{api_url}/analyze/upload",
+                        files=files,
+                        data=data,
+                        timeout=30,
+                    )
+
+                    if response.status_code == 200:
+                        job_data = response.json()
+                        st.session_state["job_id"] = job_data["job_id"]
+                        st.session_state["api_url"] = api_url
+                        st.session_state["result"] = None
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Erro ao iniciar análise: {response.text}")
+
+                except requests.exceptions.ConnectionError:
+                    st.error("❌ Não foi possível conectar à API.")
+                except Exception as e:
+                    st.error(f"❌ Erro: {str(e)}")
+
+        # Polling de progresso enquanto job estiver rodando
+        if st.session_state.get("job_id") and not st.session_state.get("result"):
+            job_id  = st.session_state["job_id"]
+            api_url_job = st.session_state.get("api_url", api_url)
+            _render_job_progress(job_id, api_url_job)
+
+        # Exibe resultado quando pronto
+        if st.session_state.get("result"):
+            st.success("✅ Análise concluída com sucesso!")
+            display_results(st.session_state["result"])
+            if st.button("🔄 Nova Análise"):
+                st.session_state.pop("job_id", None)
+                st.session_state.pop("result", None)
+                st.rerun()
+
+        if not uploaded_file and not st.session_state.get("job_id") and not st.session_state.get("result"):
             st.info("👆 Selecione um arquivo PDF para começar")
     
     with tab2:
         st.header("📊 Status do Sistema")
-        
+
+        if st.button("🔄 Atualizar Status"):
+            st.rerun()
+
         try:
-            response = requests.get(f"{api_url}/status")
+            response = requests.get(f"{api_url}/status", timeout=5)
             if response.status_code == 200:
                 status = response.json()
-                
+
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Status", status["status"])
                 col2.metric("Versão", status["version"])
                 col3.metric("Orquestração", status["orchestration"])
-                
+
                 st.subheader("Nós Disponíveis")
                 for node in status["nodes"]:
                     st.success(f"✅ {node}")
             else:
                 st.error("❌ Não foi possível obter o status do sistema")
-        
+
         except requests.exceptions.ConnectionError:
-            st.error("❌ Não foi possível conectar à API. Verifique se o servidor está rodando.")
+            st.warning("⚠️ API não está respondendo em `http://127.0.0.1:8000`.")
+            st.info(
+                "A API pode estar ainda inicializando (leva ~25s no primeiro start). "
+                "Clique em **Atualizar Status** após alguns instantes."
+            )
+            st.code("python start_app.py", language="bash")
+        except requests.exceptions.Timeout:
+            st.warning("⚠️ API demorou para responder. Clique em Atualizar Status.")
         except Exception as e:
             st.error(f"❌ Erro: {str(e)}")
     
@@ -157,66 +244,250 @@ def main():
 
 
 def display_results(result):
-    """Exibe os resultados da análise."""
-    
+    """Exibe os resultados da análise de forma legível."""
+
     st.header("📊 Resultados da Análise")
-    
-    # Tabs para diferentes resultados
-    result_tab1, result_tab2, result_tab3, result_tab4 = st.tabs([
-        "Resumo",
-        "Análise",
-        "Checklist",
-        "JSON Completo"
+
+    result_data = result.get("result", {})
+
+    result_tab1, result_tab2, result_tab3, result_tab4, result_tab5 = st.tabs([
+        "📈 Resumo",
+        "❓ Perguntas Respondidas",
+        "🔍 Análise de Requisitos",
+        "📋 Checklist de Documentos",
+        "🗂 JSON Completo",
     ])
-    
+
+    analysis      = result_data.get("analysis") or {}
+    structured    = analysis.get("structured_analysis", {})
+    critical      = analysis.get("critical_analysis", {})
+    llm_analysis  = analysis.get("llm_analysis")  # None em mock mode
+    checklist_data = result_data.get("checklist") or {}
+    resumo        = checklist_data.get("resumo", {})
+    checklist     = checklist_data.get("checklist", {})
+
+    # ── helpers locais ────────────────────────────────────────────
+    def dedup_ordered(lst):
+        seen, out = set(), []
+        for x in lst:
+            x = x.strip()
+            if x and x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    def aggregate(field):
+        items = []
+        for data in structured.values():
+            items.extend(data.get(field, []))
+        return dedup_ordered(items)
+
+    def aggregate_critical(field):
+        items = []
+        for data in critical.values():
+            items.extend(data.get(field, []))
+        return dedup_ordered(items)
+
+    all_tech      = aggregate("technical_requirements")
+    all_docs_raw  = aggregate("documentation")
+    all_deadlines = aggregate("deadlines")
+    all_risks     = aggregate_critical("critical_points")
+    all_recs      = dedup_ordered(aggregate_critical("recommendations"))
+
+    # ──────────────────────────────────────────────────────────────
+    # TAB 1 — Resumo executivo
+    # ──────────────────────────────────────────────────────────────
     with result_tab1:
-        st.subheader("📈 Resumo")
-        
-        if "result" in result:
-            result_data = result["result"]
-            
-            col1, col2, col3 = st.columns(3)
-            
-            chunks_count = result_data.get("chunks_count", 0)
-            col1.metric("Chunks Gerados", chunks_count)
-            
-            if result_data.get("embeddings"):
-                embeddings_count = result_data["embeddings"].get("total_embeddings", 0)
-                col2.metric("Embeddings", embeddings_count)
-            
-            if result_data.get("checklist"):
-                docs_count = result_data["checklist"].get("resumo", {}).get("total_documentos", 0)
-                col3.metric("Documentos", docs_count)
-    
+        chunks_count     = result_data.get("chunks_count", 0)
+        embeddings_count = (result_data.get("embeddings") or {}).get("total_embeddings", 0)
+        docs_count       = resumo.get("total_documentos", 0)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Trechos extraídos",   chunks_count)
+        col2.metric("Embeddings gerados",  embeddings_count)
+        col3.metric("Documentos exigidos", docs_count)
+        col4.metric("Seções analisadas",   analysis.get("total_chunks_processed", 0))
+
+        # Nível de risco
+        st.divider()
+        st.subheader("Avaliação de Risco")
+
+        if critical:
+            risk_counts = {"ALTO": 0, "MEDIO": 0, "BAIXO": 0}
+            for d in critical.values():
+                risk_counts[d.get("risk_level", "BAIXO")] += 1
+
+            overall = "ALTO" if risk_counts["ALTO"] else ("MEDIO" if risk_counts["MEDIO"] else "BAIXO")
+            icon    = {"ALTO": "🔴", "MEDIO": "🟡", "BAIXO": "🟢"}[overall]
+            st.markdown(f"### {icon} Risco Geral: {overall}")
+
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric("🔴 Alto",  risk_counts["ALTO"])
+            rc2.metric("🟡 Médio", risk_counts["MEDIO"])
+            rc3.metric("🟢 Baixo", risk_counts["BAIXO"])
+        else:
+            st.info("Avaliação de risco não disponível.")
+
+        # Prazos — versão resumida no Resumo (máx 5)
+        if all_deadlines:
+            st.divider()
+            st.subheader("⏰ Principais Prazos")
+            for d in all_deadlines[:5]:
+                st.write(f"• {d}")
+            if len(all_deadlines) > 5:
+                st.caption(f"+ {len(all_deadlines) - 5} prazos adicionais na aba Análise de Requisitos.")
+
+        # Recomendações prioritárias
+        if all_recs:
+            st.divider()
+            st.subheader("💡 Recomendações")
+            for rec in all_recs[:4]:
+                st.success(f"✔ {rec}")
+
+        # Objeto do edital (só disponível com LLM)
+        if llm_analysis and llm_analysis.get("objeto"):
+            st.divider()
+            st.subheader("📌 Objeto do Edital")
+            st.info(llm_analysis["objeto"])
+
+    # ──────────────────────────────────────────────────────────────
+    # TAB 2 — Perguntas e Respostas RAG
+    # ──────────────────────────────────────────────────────────────
     with result_tab2:
-        st.subheader("🔍 Análise de Requisitos")
-        
-        if "result" in result and result["result"].get("analysis"):
-            analysis = result["result"]["analysis"]
-            st.json(analysis)
+        rag_answers = analysis.get("rag_answers", {})
+
+        if not rag_answers:
+            st.info(
+                "ℹ️ As respostas por pergunta estão disponíveis apenas com IA real. "
+                "Configure `NODE3_MOCK_MODE=false` e `GROQ_API_KEY` no `.env`."
+            )
         else:
-            st.info("Análise não disponível")
-    
+            risk_icon = {"ALTO": "🔴", "MEDIO": "🟡", "BAIXO": "🟢"}
+
+            for key, label, _ in analysis.get("_rag_queries_meta", []) or [
+                # fallback: percorre na ordem original se não vier metadado
+                (k, v["label"], None) for k, v in rag_answers.items()
+            ]:
+                ans = rag_answers.get(key, {})
+                if not ans:
+                    continue
+
+                risco = ans.get("nivel_risco", "BAIXO")
+                icon  = risk_icon.get(risco, "⚪")
+                label_display = ans.get("label", label)
+
+                with st.expander(f"{icon} {label_display}", expanded=True):
+                    resposta = ans.get("resposta", "")
+                    if resposta:
+                        st.markdown(f"**{resposta}**")
+
+                    detalhes = ans.get("detalhes", [])
+                    if detalhes:
+                        st.markdown("")
+                        for item in detalhes:
+                            st.write(f"• {item}")
+
+                    obs = ans.get("observacao", "")
+                    if obs:
+                        st.caption(f"ℹ️ {obs}")
+
+    # ──────────────────────────────────────────────────────────────
+    # TAB 3 — Análise de Requisitos
+    # ──────────────────────────────────────────────────────────────
     with result_tab3:
-        st.subheader("📋 Checklist de Documentos")
-        
-        if "result" in result and result["result"].get("checklist"):
-            checklist = result["result"]["checklist"]
-            
-            if checklist.get("resumo"):
-                st.write("**Resumo:**")
-                st.json(checklist["resumo"])
-            
-            if checklist.get("checklist"):
-                st.write("**Categorias:**")
-                for category, data in checklist["checklist"].items():
-                    with st.expander(f"📁 {category.upper()}"):
-                        st.json(data)
+        if not structured:
+            st.info("Análise de requisitos não disponível.")
         else:
-            st.info("Checklist não disponível")
-    
+            # Requisitos técnicos
+            if all_tech:
+                with st.expander(f"⚙️ Requisitos Técnicos — {len(all_tech)} item(ns)", expanded=True):
+                    for i, req in enumerate(all_tech, 1):
+                        st.write(f"**{i}.** {req}")
+            else:
+                st.info("Nenhum requisito técnico específico identificado no edital.")
+
+            # Prazos — todos aqui
+            if all_deadlines:
+                with st.expander(f"⏰ Prazos e Cronogramas — {len(all_deadlines)} item(ns)", expanded=True):
+                    for d in all_deadlines:
+                        st.write(f"• {d}")
+            else:
+                st.info("Nenhum prazo identificado.")
+
+            # Pontos críticos — colapsado por padrão, todos os válidos
+            if all_risks:
+                with st.expander(
+                    f"⚠️ Pontos Críticos — {len(all_risks)} identificados",
+                    expanded=False,
+                ):
+                    for i, risk in enumerate(all_risks, 1):
+                        st.warning(f"**{i}.** {risk}")
+            
+            # Todas as recomendações
+            if all_recs:
+                st.divider()
+                st.subheader("💡 Recomendações")
+                for rec in all_recs:
+                    st.success(f"✔ {rec}")
+
+    # ──────────────────────────────────────────────────────────────
+    # TAB 4 — Checklist de Documentos
+    # ──────────────────────────────────────────────────────────────
     with result_tab4:
-        st.subheader("📄 JSON Completo")
+        if not checklist:
+            st.info("Checklist não disponível. Nenhum documento foi identificado no edital.")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total de documentos", resumo.get("total_documentos", 0))
+            col2.metric("Obrigatórios",         resumo.get("obrigatorios", 0))
+            col3.metric("Opcionais",            resumo.get("opcionais", 0))
+            col4.metric("Categorias",           resumo.get("categorias", 0))
+
+            st.divider()
+
+            category_labels = {
+                "habilitacao": ("🪪", "Habilitação Jurídica"),
+                "fiscal":      ("🧾", "Regularidade Fiscal"),
+                "tecnica":     ("⚙️", "Qualificação Técnica"),
+                "juridica":    ("⚖️", "Documentação Jurídica"),
+                "trabalhista": ("👷", "Regularidade Trabalhista"),
+                "outros":      ("📂", "Outros Documentos"),
+            }
+
+            for category, data in checklist.items():
+                icon, label = category_labels.get(category, ("📁", category.upper()))
+                itens = data.get("itens", [])
+                if not itens:
+                    continue
+
+                with st.expander(f"{icon} {label} — {len(itens)} documento(s)", expanded=True):
+                    # Cabeçalho da tabela
+                    hc = st.columns([0.04, 0.52, 0.22, 0.22])
+                    hc[1].markdown("**Documento**")
+                    hc[2].markdown("**Tipo**")
+                    hc[3].markdown("**Prazo**")
+                    st.markdown("---")
+
+                    for item in itens:
+                        doc_name    = item.get("documento", "—").title()
+                        obrigatorio = item.get("obrigatorio", True)
+                        status      = item.get("status", "pendente")
+                        prazo       = item.get("prazo")
+
+                        badge       = "🔴 Obrigatório" if obrigatorio else "🟡 Opcional"
+                        status_icon = {"pendente": "⬜", "ok": "✅", "faltando": "❌"}.get(status, "⬜")
+
+                        cols = st.columns([0.04, 0.52, 0.22, 0.22])
+                        cols[0].write(status_icon)
+                        cols[1].write(doc_name)
+                        cols[2].write(badge)
+                        cols[3].write(prazo if prazo else "—")
+
+    # ──────────────────────────────────────────────────────────────
+    # TAB 5 — JSON (debug)
+    # ──────────────────────────────────────────────────────────────
+    with result_tab5:
+        st.caption("Dados brutos retornados pela API — útil para debug.")
         st.json(result)
 
 

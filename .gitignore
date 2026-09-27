@@ -46,6 +46,10 @@ ENV/
 # Vector Database
 data/vector_db/
 
+# Uploads (PDFs enviados via API)
+data/raw/uploads/
+data/processed/
+
 # OS
 .DS_Store
 Thumbs.db

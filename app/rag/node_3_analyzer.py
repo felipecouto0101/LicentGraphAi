@@ -1,12 +1,16 @@
 import logging
 import os
 import re
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Callback global de progresso — preenchido pela API quando há um job ativo
+_progress_callback = None
 
 
 class Node3RequirementAnalyzer:
@@ -22,53 +26,125 @@ class Node3RequirementAnalyzer:
     def __init__(
         self,
         api_key: str | None = None,
-        model_name: str = "openai/gpt-oss-120b",
-        temperature: float = 0.7,
-        max_tokens: int = 2000,
+        model_name: str = "qwen/qwen3.8-27b",
+        temperature: float = 0.3,
+        max_tokens: int = 800,
         mock_mode: bool = False,
+        persist_directory: str = "./data/vector_db",
+        collection_name: str = "licitacoes",
     ):
         """
-        Inicializa o Nó 3 com configuração do Groq.
+        Inicializa o Nó 3.
 
         Args:
             api_key: Chave da API Groq (ou usa variável de ambiente)
-            model_name: Nome do modelo Llama
+            model_name: Nome do modelo LLM
             temperature: Temperatura para geração
             max_tokens: Máximo de tokens na resposta
             mock_mode: Se True, não inicializa LLM real (para testes)
-
-        Raises:
-            ValueError: Se não houver chave da API e não estiver em mock_mode
+            persist_directory: Diretório do ChromaDB (para busca RAG)
+            collection_name: Nome da coleção ChromaDB
         """
-        # Obtém API key
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         self.mock_mode = mock_mode
+        self.persist_directory = persist_directory
+        self.collection_name = collection_name
 
         if not self.api_key and not mock_mode:
             raise ValueError(
                 "API key é obrigatória. Forneça api_key ou configure GROQ_API_KEY"
             )
 
-        # Configurações do modelo
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        # Inicializa o LLM (se não estiver em mock mode)
         if not mock_mode:
-            self.llm = ChatGroq(
-                model_name=self.model_name,
-                api_key=self.api_key,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            )
+            self._api_keys = self._load_api_keys()
+            self._current_key_idx = 0
+            self.llm = self._make_llm(self._api_keys[0])
+            logger.info(f"Nó 3: {len(self._api_keys)} chave(s) API carregada(s)")
         else:
+            self._api_keys = []
             self.llm = None
             logger.info("Nó 3 em modo mock (sem LLM real)")
 
         logger.info(
             f"Nó 3 inicializado: modelo={model_name}, temperature={temperature}, mock_mode={mock_mode}"
         )
+
+    def _load_api_keys(self) -> list[str]:
+        """Carrega todas as chaves API disponíveis do ambiente."""
+        keys = []
+        # GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, ...
+        for suffix in ["", "_2", "_3", "_4", "_5"]:
+            k = os.getenv(f"GROQ_API_KEY{suffix}", "").strip()
+            if k and k != "your_groq_api_key_here":
+                keys.append(k)
+        if not keys and self.api_key:
+            keys.append(self.api_key)
+        return keys
+
+    def _make_llm(self, api_key: str) -> ChatGroq:
+        """Cria uma instância do LLM com a chave fornecida."""
+        return ChatGroq(
+            model_name=self.model_name,
+            api_key=api_key,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+
+    def _rotate_key(self) -> bool:
+        """
+        Tenta rotacionar para a próxima chave API disponível.
+        Retorna True se conseguiu, False se não há mais chaves.
+        """
+        next_idx = self._current_key_idx + 1
+        if next_idx >= len(self._api_keys):
+            logger.error("Todas as chaves API esgotaram o limite. Sem mais chaves disponíveis.")
+            return False
+        self._current_key_idx = next_idx
+        self.llm = self._make_llm(self._api_keys[next_idx])
+        logger.warning(f"Rotacionando para chave {next_idx + 1}/{len(self._api_keys)}")
+        return True
+
+    def _invoke_with_rotation(self, messages: list, sleep_between: float = 8.0):
+        """
+        Invoca o LLM com rotação automática de chave em caso de 429.
+        Tenta todas as chaves disponíveis antes de desistir.
+        """
+        keys_tried = 0
+        while keys_tried <= len(self._api_keys):
+            try:
+                return self.llm.invoke(messages)
+            except Exception as e:
+                err_str = str(e)
+                is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower()
+                is_daily_limit = "tokens per day" in err_str.lower() or "TPD" in err_str
+
+                if is_rate_limit:
+                    if is_daily_limit:
+                        # Limite diário esgotado — tenta próxima chave
+                        logger.warning(f"Chave {self._current_key_idx + 1} esgotou limite diário.")
+                        if not self._rotate_key():
+                            raise
+                        keys_tried += 1
+                    else:
+                        # Rate limit por minuto — aguarda e tenta de novo
+                        import re as _re
+                        wait_match = _re.search(r"try again in (\d+)m([\d.]+)s", err_str)
+                        wait_secs = 60.0
+                        if wait_match:
+                            wait_secs = int(wait_match.group(1)) * 60 + float(wait_match.group(2))
+                            wait_secs = min(wait_secs + 5, 120)  # máx 2 min de espera
+                        logger.warning(f"Rate limit por minuto. Aguardando {wait_secs:.0f}s...")
+                        time.sleep(wait_secs)
+                        # Tenta a mesma chave de novo
+                        keys_tried += 1
+                        continue
+                else:
+                    raise
+        raise RuntimeError("Todas as chaves API falharam.")
 
     def analyze_chunk(self, chunk: dict, system_prompt: str | None = None) -> dict:
         """
@@ -305,87 +381,147 @@ Responda de forma estruturada e concisa.
         logger.info("Validação estruturada concluída")
         return True
 
+    # ------------------------------------------------------------------
+    # Helpers de limpeza de texto
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _clean_sentences(sentences: list[str], min_words: int = 4, max_chars: int = 180) -> list[str]:
+        """
+        Remove frases muito curtas, muito longas ou claramente inúteis.
+
+        Regras:
+        - Pelo menos `min_words` palavras
+        - No máximo `max_chars` caracteres (trunca com reticências)
+        - Sem linhas que sejam só números/pontuação
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for s in sentences:
+            s = s.strip()
+            if not s:
+                continue
+            words = s.split()
+            if len(words) < min_words:
+                continue
+            # Remove frases que são basicamente ruído (só dígitos/pontuação)
+            if sum(c.isalpha() for c in s) < 10:
+                continue
+            # Trunca frases longas demais
+            if len(s) > max_chars:
+                s = s[:max_chars].rsplit(" ", 1)[0] + "..."
+            # Dedup por conteúdo normalizado
+            key = " ".join(words[:8])  # primeiras 8 palavras como chave
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(s)
+        return result
+
     def _extract_technical_requirements(self, content: str, section: str) -> list[str]:
         """Extrai requisitos técnicos do conteúdo."""
-        requirements = []
-
-        # Palavras-chave técnicas comuns em editais
+        # Palavras-chave específicas o suficiente para não gerar ruído
         tech_keywords = [
-            "processador",
-            "cpu",
-            "memória",
-            "ram",
-            "armazenamento",
-            "ssd",
-            "hdd",
-            "monitor",
-            "placa de vídeo",
-            "sistema operacional",
-            "software",
-            "especificação técnica",
-            "norma",
-            "abnt",
-            "iso",
-            "certificação",
+            "processador", "cpu", "memória ram", "armazenamento",
+            "ssd", "hdd", "monitor", "placa de vídeo",
+            "sistema operacional", "especificação técnica",
+            "norma abnt", "certificação iso", "certificação abnt",
         ]
 
+        found: list[str] = []
+        sentences = content.split(".")
         for keyword in tech_keywords:
-            if keyword in content:
-                # Encontra a frase completa contendo a palavra-chave
-                sentences = content.split(".")
-                for sentence in sentences:
-                    if keyword in sentence:
-                        requirements.append(sentence.strip())
+            for sentence in sentences:
+                if keyword in sentence:
+                    found.append(sentence)
 
-        return requirements
+        return self._clean_sentences(found, min_words=5, max_chars=160)
 
     def _extract_deadlines(self, content: str, section: str) -> list[str]:
-        """Extrai prazos e deadlines do conteúdo."""
-        deadlines = []
+        """
+        Extrai prazos usando regex para capturar só o trecho relevante
+        (ex.: '30 dias', '10 dias úteis', '15/03/2026'), não a frase inteira.
+        """
+        import re
 
-        deadline_keywords = [
-            "prazo",
-            "deadline",
-            "entrega",
-            "vigência",
-            "dia",
-            "mês",
-            "ano",
+        patterns = [
+            # "prazo de X [por extenso] dias [úteis/corridos] ..."
+            r"prazo\s+de\s+(?:\d+|\w+)\s*(?:\([^)]+\)\s*)?\s*dias?[^,;\n.]{0,60}",
+            # "X (por extenso) dias após/contado/a contar"
+            r"\d+\s*(?:\([^)]+\)\s*)?dias?\s+[a-záàâãéêíóôõúç ]{0,15}(?:após|contado|a contar)[^,;\n.]{0,50}",
+            # "até DD/MM/AAAA"
+            r"até\s+\d{1,2}/\d{1,2}/\d{2,4}",
+            # "vigência de X meses/anos"
+            r"vigência\s+de\s+\d+\s*(?:meses?|anos?)[^,;\n.]{0,40}",
+            # "entrega em/no prazo de X dias"
+            r"entrega\s+(?:em|no\s+prazo\s+de)\s+\d+\s*dias?[^,;\n.]{0,40}",
         ]
 
-        for keyword in deadline_keywords:
-            if keyword in content:
-                sentences = content.split(".")
-                for sentence in sentences:
-                    if keyword in sentence:
-                        deadlines.append(sentence.strip())
+        found: list[str] = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, content, re.IGNORECASE):
+                text = match.group(0).strip().rstrip(",;:")
+                if len(text.split()) >= 3:  # mínimo 3 palavras
+                    found.append(text)
 
-        return deadlines
+        # Dedup por prefixo (primeiros 35 chars)
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in found:
+            key = item[:35].lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(item.capitalize())
+
+        return result[:20]
 
     def _extract_documentation(self, content: str, section: str) -> list[str]:
-        """Extrai documentação exigida do conteúdo."""
-        documentation = []
+        """
+        Extrai nomes de documentos, não frases inteiras.
+        Prioriza a keyword em si + palavras adjacentes para nomear o documento.
+        """
+        import re
 
-        doc_keywords = [
-            "document",
-            "certidão",
-            "licença",
-            "registro",
-            "alvará",
-            "cnh",
-            "rg",
-            "cpf",
-            "cnpj",
-        ]
+        # Documentos com nome fixo — retorna o nome canônico direto
+        fixed_docs = {
+            "certidão negativa de débitos": "Certidão Negativa de Débitos (CND)",
+            "certidão negativa": "Certidão Negativa",
+            "certidão positiva": "Certidão Positiva com Efeito de Negativa",
+            "balanço patrimonial": "Balanço Patrimonial",
+            "demonstrativo de resultados": "Demonstrativo de Resultados",
+            "registro no cnpj": "Comprovante de Inscrição no CNPJ",
+            "cnpj": "Cartão CNPJ",
+            "contrato social": "Contrato Social",
+            "estatuto social": "Estatuto Social",
+            "ata de eleição": "Ata de Eleição da Diretoria",
+            "procuração": "Procuração",
+            "atestado de capacidade técnica": "Atestado de Capacidade Técnica",
+            "atestado técnico": "Atestado Técnico",
+            "licença de funcionamento": "Licença de Funcionamento",
+            "alvará": "Alvará de Funcionamento",
+            "cnh": "CNH",
+            "registro geral": "RG",
+            r"\brg\b": "RG",
+            r"\bcpf\b": "CPF",
+            "inscrição estadual": "Inscrição Estadual",
+            "inscrição municipal": "Inscrição Municipal",
+            "certidão trabalhista": "Certidão de Regularidade Trabalhista (CNDT)",
+            "prova de regularidade": "Prova de Regularidade Fiscal",
+            "comprovante de regularidade": "Comprovante de Regularidade",
+            "declaração de idoneidade": "Declaração de Idoneidade",
+            "declaração de inexistência": "Declaração de Inexistência de Fatos Impeditivos",
+        }
 
-        for keyword in doc_keywords:
-            if keyword in content:
-                sentences = content.split(".")
-                for sentence in sentences:
-                    if keyword in sentence:
-                        documentation.append(sentence.strip())
+        found: list[str] = []
+        seen: set[str] = set()
 
-        return documentation
+        for pattern, canonical_name in fixed_docs.items():
+            if re.search(pattern, content, re.IGNORECASE):
+                if canonical_name not in seen:
+                    seen.add(canonical_name)
+                    found.append(canonical_name)
+
+        return found
 
     def _extract_object_info(self, content: str, section: str) -> dict:
         """Extrai informações do objeto/bem."""
@@ -544,34 +680,68 @@ Responda de forma estruturada e concisa.
         return True
 
     def _extract_critical_keywords(self, content: str) -> list[str]:
-        """Extrai palavras-chave críticas do conteúdo."""
+        """
+        Extrai pontos críticos do conteúdo.
+
+        Filtra frases que claramente vieram corrompidas do PDF:
+        - Muitas palavras com ≤2 letras (abreviações/ruído)
+        - Menos de 6 palavras reais
+        - Referências ao nome do edital (repetitivas, sem valor)
+        """
         critical_keywords = [
-            "impossível",
-            "inviável",
-            "curto prazo",
-            "multa",
-            "penalidade",
-            "severo",
-            "obrigatório",
-            "exclusivo",
-            "único",
-            "imediato",
-            "urgente",
-            "complexo",
-            "difícil",
-            "risco",
-            "perigo",
+            "impossível", "inviável", "curto prazo", "multa", "penalidade",
+            "severo", "obrigatório", "exclusivo", "único", "imediato",
+            "urgente", "complexo", "difícil", "risco", "perigo",
+            "impedimento", "sanção", "rescisão", "inadimplência",
         ]
 
-        points = []
-        for keyword in critical_keywords:
-            if keyword in content:
-                sentences = content.split(".")
-                for sentence in sentences:
-                    if keyword in sentence:
-                        points.append(sentence.strip())
+        # Padrões de ruído que indicam texto corrompido
+        noise_patterns = [
+            r"\bedital\s+concorrência\s+eletrônica\b",  # referência repetitiva ao edital
+            r"\bprocesso\s+administrativo\s+n[°º]",
+            r"[a-z]\)\s+[a-z]\)\s+[a-z]\)",             # sequências tipo "a) b) c)"
+        ]
 
-        return points
+        candidates: list[str] = []
+        sentences = content.split(".")
+        for keyword in critical_keywords:
+            for sentence in sentences:
+                if keyword in sentence:
+                    candidates.append(sentence)
+
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for sent in candidates:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # Descarta se contém padrões de ruído
+            is_noisy = any(re.search(p, sent, re.IGNORECASE) for p in noise_patterns)
+            if is_noisy:
+                continue
+
+            words = sent.split()
+            # Descarta frases muito curtas
+            if len(words) < 6:
+                continue
+
+            # Descarta se >40% das palavras têm ≤2 letras (texto corrompido)
+            short_words = sum(1 for w in words if len(re.sub(r"[^a-záàâãéêíóôõúç]", "", w.lower())) <= 2)
+            if short_words / len(words) > 0.40:
+                continue
+
+            # Trunca e dedup
+            if len(sent) > 200:
+                sent = sent[:200].rsplit(" ", 1)[0] + "..."
+            key = " ".join(words[:7])
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(sent.capitalize())
+
+        return result[:15]  # máximo 15 pontos críticos por chunk
 
     def _classify_risk_level(self, content: str, critical_points: list[str]) -> str:
         """Classifica o nível de risco."""
@@ -664,45 +834,434 @@ Responda de forma estruturada e concisa.
 
         return grouped
 
-    def process_from_node2(self, chunks: list[dict]) -> dict:
+    def _build_structured_prompt(self, chunks: list[dict]) -> str:
         """
-        Processa chunks vindos do Nó 2.
-
-        Args:
-            chunks: Lista de chunks do Nó 2
-
-        Returns:
-            Dicionário com análise completa
+        Monta prompt para análise estruturada de múltiplos chunks via LLM.
+        Retorna JSON com campos padronizados.
         """
-        logger.info(f"Processando {len(chunks)} chunks do Nó 2")
+        # Concatena conteúdo dos chunks com identificação de seção
+        sections_text = ""
+        for chunk in chunks:
+            section = chunk.get("section", "geral")
+            content = chunk.get("content", "").strip()
+            if content:
+                sections_text += f"\n--- SEÇÃO: {section.upper()} ---\n{content}\n"
 
-        if not chunks:
-            return {
-                "total_chunks_processed": 0,
-                "structured_analysis": {},
-                "critical_analysis": {},
-            }
+        prompt = f"""Você é um especialista em licitações públicas brasileiras (Lei 14.133/2021).
+Analise os trechos abaixo de um edital de licitação e extraia as informações solicitadas.
 
-        # Análise estruturada
-        structured_analysis = {
-            chunk.get("metadata", {}).get("chunk_id", i): self.extract_structured_info(
-                chunk
-            )
-            for i, chunk in enumerate(chunks)
+TRECHOS DO EDITAL:
+{sections_text}
+
+Responda SOMENTE com um JSON válido no seguinte formato (sem markdown, sem explicações fora do JSON):
+{{
+  "objeto": "descrição resumida do objeto da licitação em 1-2 frases",
+  "requisitos_tecnicos": ["lista de requisitos técnicos objetivos, cada item em 1 frase clara"],
+  "documentos_exigidos": ["nome canônico de cada documento exigido, ex: Certidão Negativa de Débitos, CNPJ, Atestado Técnico"],
+  "prazos": ["cada prazo em formato legível, ex: 30 dias úteis para entrega"],
+  "pontos_criticos": ["cada ponto crítico ou risco em 1 frase objetiva"],
+  "nivel_risco": "ALTO|MEDIO|BAIXO",
+  "recomendacoes": ["até 3 recomendações objetivas para a empresa participante"]
+}}
+
+Regras:
+- Seja objetivo e conciso. Cada item deve ser uma frase completa e compreensível.
+- Não repita informações entre campos.
+- Se não houver informação para um campo, use lista vazia [].
+- Para nivel_risco: ALTO se houver multas severas/prazos curtos/requisitos complexos, MEDIO se moderado, BAIXO se simples.
+"""
+        return prompt
+
+    def _parse_llm_json(self, response: str) -> dict:
+        """
+        Parseia o JSON retornado pelo LLM de forma robusta.
+        Tenta extrair o JSON mesmo se o LLM incluir texto extra.
+        """
+        import json
+
+        # Tenta parsear direto
+        try:
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Tenta extrair bloco JSON com regex
+        match = re.search(r'\{[\s\S]*\}', response)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: retorna estrutura vazia
+        logger.warning("Não foi possível parsear JSON do LLM, usando fallback")
+        return {
+            "objeto": "",
+            "requisitos_tecnicos": [],
+            "documentos_exigidos": [],
+            "prazos": [],
+            "pontos_criticos": [],
+            "nivel_risco": "BAIXO",
+            "recomendacoes": [],
         }
 
-        # Análise crítica
+    # ──────────────────────────────────────────────────────────────
+    # Queries RAG temáticas
+    # ──────────────────────────────────────────────────────────────
+
+    # Cada entrada: (chave_interna, label_display, texto_da_query_para_embedding)
+    RAG_QUERIES: list[tuple[str, str, str]] = [
+        (
+            "objeto_licitacao",
+            "Objeto da Licitação",
+            "objeto da licitação contratação aquisição serviço bem fornecimento "
+            "descrição do objeto finalidade do contrato o que será contratado",
+        ),
+        (
+            "posso_participar",
+            "Posso participar?",
+            "requisitos habilitação participação licitante empresa qualificação "
+            "escolaridade idade registro profissional documentos específicos "
+            "impedimento inabilitação condições de participação",
+        ),
+        (
+            "prazos",
+            "Quais são os prazos?",
+            "prazo entrega vigência contrato cronograma data limite "
+            "dias úteis corridos início execução encerramento",
+        ),
+        (
+            "custos_pagamento",
+            "Quanto custa e como pago?",
+            "valor estimado preço pagamento faturamento nota fiscal "
+            "reajuste reequilíbrio financeiro garantia caução depósito",
+        ),
+        (
+            "selecao_processo",
+            "Como será a seleção ou avaliação?",
+            "critério julgamento menor preço técnica proposta avaliação "
+            "pontuação classificação habilitação etapas processo seleção",
+        ),
+        (
+            "objeto_escopo",
+            "O que devo entregar ou produzir?",
+            "objeto escopo serviço produto bem especificação técnica "
+            "entregável quantidade unidade memorial descritivo planilha",
+        ),
+        (
+            "eliminacao_penalidades",
+            "Quais são as regras de eliminação?",
+            "eliminação desclassificação inabilitação penalidade multa "
+            "sanção rescisão impedimento declaração inidoneidade",
+        ),
+        (
+            "documentos",
+            "Quais documentos são exigidos?",
+            "documentação exigida certidão comprovante declaração atestado "
+            "registro alvará licença CNPJ balanço contrato social habilitação "
+            "regularidade fiscal trabalhista jurídica técnica",
+        ),
+        (
+            "pontos_criticos",
+            "Pontos críticos e riscos",
+            "risco crítico urgente multa penalidade obrigatório prazo curto "
+            "complexo impossível severo rescisão inadimplência garantia",
+        ),
+    ]
+
+    def _retrieve_rag_chunks(
+        self,
+        top_k: int = 5,
+        keys_override: list[str] | None = None,
+    ) -> dict[str, list[dict]]:
+        """
+        Para cada query RAG temática, busca os top_k chunks mais relevantes
+        no ChromaDB usando similaridade vetorial.
+
+        Args:
+            top_k: Número de chunks a recuperar por query
+            keys_override: Se fornecido, busca apenas as queries com essas chaves
+
+        Returns:
+            Dict: {chave_query: [chunks_relevantes]}
+        """
+        from .node_2_embeddings import Node2EmbeddingGenerator
+
+        logger.info(f"RAG: iniciando busca vetorial em '{self.persist_directory}'")
+
+        node2 = Node2EmbeddingGenerator()
+        results_by_query: dict[str, list[dict]] = {}
+
+        queries_to_run = [
+            (key, label, qt) for key, label, qt in self.RAG_QUERIES
+            if keys_override is None or key in keys_override
+        ]
+
+        for key, label, query_text in queries_to_run:
+            try:
+                raw = node2.search_similar(
+                    query=query_text,
+                    collection_name=self.collection_name,
+                    n_results=top_k,
+                    persist_directory=self.persist_directory,
+                )
+                docs = raw.get("documents", [[]])[0]
+                metas = raw.get("metadatas", [[]])[0]
+
+                chunks = [
+                    {
+                        "content": doc,
+                        "section": meta.get("section", "geral"),
+                        "metadata": meta,
+                        "rag_query": label,
+                    }
+                    for doc, meta in zip(docs, metas)
+                    if doc and doc.strip()
+                ]
+                results_by_query[key] = chunks
+                logger.info(f"RAG '{label}': {len(chunks)} chunks recuperados")
+
+            except Exception as e:
+                logger.warning(f"RAG '{label}': erro na busca — {e}")
+                results_by_query[key] = []
+
+        return results_by_query
+
+
+    def _build_unified_prompt(self, chunks: list[dict]) -> str:
+        """
+        Prompt unificado: extrai TODAS as informacoes relevantes de um batch
+        em uma unica chamada ao LLM.
+        """
+        context = "\n\n".join(
+            f"[Trecho {i+1}]\n{c['content'].strip()}"
+            for i, c in enumerate(chunks)
+            if c.get("content", "").strip()
+        )
+        return f"""Especialista em licitacoes publicas brasileiras (Lei 14.133/2021).
+
+Analise os trechos abaixo e extraia TODAS as informacoes encontradas.
+
+TRECHOS:
+{context}
+
+Responda SOMENTE com JSON valido (sem markdown):
+{{
+  "objeto": "descricao do objeto se encontrado, senao string vazia",
+  "documentos": ["nome exato de cada documento exigido encontrado, ex: Certidao Negativa de Debitos, CNPJ, Atestado Tecnico"],
+  "requisitos_participacao": ["cada requisito objetivo para participar, ex: CNPJ ativo, Registro no CREA"],
+  "prazos": ["cada prazo com valor, ex: 90 dias corridos para execucao, 30 dias para pagamento"],
+  "custos": ["valores e formas de pagamento encontrados"],
+  "selecao": ["etapas e criterios de selecao encontrados"],
+  "entregas": ["o que deve ser entregue ou executado"],
+  "eliminacao": ["causas de eliminacao ou penalidades com valores"],
+  "riscos": ["riscos e pontos criticos objetivos"],
+  "nivel_risco": "ALTO|MEDIO|BAIXO"
+}}
+
+Regras:
+- Inclua apenas o que esta EXPLICITAMENTE nos trechos.
+- Documentos: apenas nomes de documentos, nao frases explicativas.
+- Se nao ha informacao para um campo, use lista vazia ou string vazia.
+- Seja conciso: cada item em no maximo 15 palavras.
+"""
+
+    def _process_with_rag_llm(self, chunks: list[dict]) -> dict:
+        """
+        Passagem unica: 1 chamada ao LLM por batch, extraindo TODAS as informacoes.
+        31 batches em vez de 9 queries x 31 = 279 chamadas.
+        Reducao de 90pct no consumo de tokens.
+        """
+        BATCH_SIZE    = 5
+        SLEEP_BETWEEN = 8
+
+        system_msg = SystemMessage(content=(
+            "Voce e um especialista em licitacoes publicas brasileiras (Lei 14.133/2021). "
+            "Responda sempre com JSON valido, sem markdown, sem texto fora do JSON."
+        ))
+
+        risk_order = {"ALTO": 2, "MEDIO": 1, "BAIXO": 0}
+
+        # Prepara batches (500 chars por chunk)
+        trimmed = []
+        for c in chunks:
+            tc = dict(c)
+            if len(tc.get("content", "")) > 500:
+                tc["content"] = tc["content"][:500] + "..."
+            trimmed.append(tc)
+
+        all_batches = [trimmed[i:i+BATCH_SIZE] for i in range(0, len(trimmed), BATCH_SIZE)]
+        total = len(all_batches)
+        logger.info(f"Passagem unica: {len(chunks)} chunks -> {total} batches")
+
+        # Acumuladores por campo
+        agg = {
+            "objeto": "",
+            "documentos": [],
+            "requisitos_participacao": [],
+            "prazos": [],
+            "custos": [],
+            "selecao": [],
+            "entregas": [],
+            "eliminacao": [],
+            "riscos": [],
+            "nivel_risco": "BAIXO",
+        }
+        max_risk = "BAIXO"
+
+        def add_unique(lst, items):
+            for item in items:
+                item = item.strip()
+                if item and item not in lst:
+                    lst.append(item)
+
+        for b_idx, batch in enumerate(all_batches):
+            if _progress_callback:
+                total_itens = sum(len(v) for v in agg.values() if isinstance(v, list))
+                _progress_callback(
+                    stage="Analisando edital com IA",
+                    query_atual=f"Processando trechos do edital",
+                    query_num=b_idx + 1,
+                    query_total=total,
+                    batch_atual=b_idx + 1,
+                    batch_total=total,
+                    itens_encontrados=total_itens,
+                )
+            try:
+                prompt = self._build_unified_prompt(batch)
+                response = self._invoke_with_rotation(
+                    [system_msg, HumanMessage(content=prompt)], SLEEP_BETWEEN
+                )
+                parsed = self._parse_llm_json(response.content)
+
+                if not agg["objeto"] and parsed.get("objeto"):
+                    agg["objeto"] = parsed["objeto"]
+
+                for field in ["documentos", "requisitos_participacao", "prazos",
+                               "custos", "selecao", "entregas", "eliminacao", "riscos"]:
+                    add_unique(agg[field], parsed.get(field, []))
+
+                batch_risk = parsed.get("nivel_risco", "BAIXO").upper()
+                if risk_order.get(batch_risk, 0) > risk_order.get(max_risk, 0):
+                    max_risk = batch_risk
+
+                gained = sum(len(parsed.get(f, [])) for f in
+                             ["documentos","requisitos_participacao","prazos","eliminacao","riscos"])
+                if gained:
+                    total_acc = sum(len(v) for v in agg.values() if isinstance(v, list))
+                    logger.info(f"  batch {b_idx+1}/{total}: +{gained} itens (total={total_acc})")
+
+            except Exception as e:
+                logger.error(f"  batch {b_idx+1} erro: {e}")
+
+            time.sleep(SLEEP_BETWEEN)
+
+        agg["nivel_risco"] = max_risk
+
+        # Mapeia para o formato compativel com display e Node 4
+        # rag_answers simula as respostas por pergunta para a tab "Perguntas Respondidas"
+        rag_answers = {
+            "objeto_licitacao": {
+                "label": "Objeto da Licitacao",
+                "resposta": agg["objeto"],
+                "detalhes": agg["entregas"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "posso_participar": {
+                "label": "Posso participar?",
+                "resposta": f"{len(agg['requisitos_participacao'])} requisitos identificados." if agg["requisitos_participacao"] else "Sem restricoes especificas identificadas.",
+                "detalhes": agg["requisitos_participacao"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "prazos": {
+                "label": "Quais sao os prazos?",
+                "resposta": f"{len(agg['prazos'])} prazos identificados." if agg["prazos"] else "Nenhum prazo especifico identificado.",
+                "detalhes": agg["prazos"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "custos_pagamento": {
+                "label": "Quanto custa e como pago?",
+                "resposta": f"{len(agg['custos'])} informacoes de custo/pagamento." if agg["custos"] else "Sem informacoes de custo identificadas.",
+                "detalhes": agg["custos"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "selecao_processo": {
+                "label": "Como sera a selecao ou avaliacao?",
+                "resposta": f"{len(agg['selecao'])} criterios identificados." if agg["selecao"] else "Criterios nao identificados.",
+                "detalhes": agg["selecao"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "objeto_escopo": {
+                "label": "O que devo entregar ou produzir?",
+                "resposta": f"{len(agg['entregas'])} entregaveis identificados." if agg["entregas"] else "Entregaveis nao identificados.",
+                "detalhes": agg["entregas"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "eliminacao_penalidades": {
+                "label": "Quais sao as regras de eliminacao?",
+                "resposta": f"{len(agg['eliminacao'])} regras identificadas." if agg["eliminacao"] else "Sem regras de eliminacao identificadas.",
+                "detalhes": agg["eliminacao"],
+                "nivel_risco": max_risk,
+                "observacao": "",
+            },
+            "documentos": {
+                "label": "Quais documentos sao exigidos?",
+                "resposta": f"{len(agg['documentos'])} documentos identificados." if agg["documentos"] else "Nenhum documento identificado.",
+                "detalhes": agg["documentos"],
+                "nivel_risco": "BAIXO",
+                "observacao": "",
+            },
+            "pontos_criticos": {
+                "label": "Pontos criticos e riscos",
+                "resposta": f"{len(agg['riscos'])} riscos identificados. Nivel: {max_risk}." if agg["riscos"] else "Nenhum risco critico identificado.",
+                "detalhes": agg["riscos"],
+                "nivel_risco": max_risk,
+                "observacao": "",
+            },
+        }
+
+        llm_analysis = {
+            "objeto": agg["objeto"],
+            "requisitos_tecnicos": agg["selecao"],
+            "documentos_exigidos": list(dict.fromkeys(agg["documentos"] + agg["requisitos_participacao"])),
+            "prazos": agg["prazos"],
+            "pontos_criticos": list(dict.fromkeys(agg["eliminacao"] + agg["riscos"])),
+            "nivel_risco": max_risk,
+            "recomendacoes": agg["requisitos_participacao"][:5],
+        }
+
+        structured_analysis = {
+            0: {
+                "technical_requirements": agg["selecao"],
+                "documentation": llm_analysis["documentos_exigidos"],
+                "deadlines": agg["prazos"],
+                "object_info": {"description": agg["objeto"], "quantity": None, "unit": None},
+                "risk_factors": llm_analysis["pontos_criticos"],
+                "section": "full_scan",
+            }
+        }
         critical_analysis = {
-            chunk.get("metadata", {}).get("chunk_id", i): self.identify_critical_points(
-                chunk
-            )
-            for i, chunk in enumerate(chunks)
+            0: {
+                "critical_points": llm_analysis["pontos_criticos"],
+                "risk_level": max_risk,
+                "recommendations": agg["requisitos_participacao"][:5],
+                "ambiguities": [],
+                "section": "full_scan",
+            }
         }
 
         return {
             "total_chunks_processed": len(chunks),
             "structured_analysis": structured_analysis,
             "critical_analysis": critical_analysis,
+            "llm_analysis": llm_analysis,
+            "rag_answers": rag_answers,
         }
 
     def process_complete_analysis(self, node2_output: dict) -> dict:

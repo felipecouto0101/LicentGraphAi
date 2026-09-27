@@ -33,8 +33,8 @@ class Node4DocumentGenerator:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_name: str = "openai/gpt-oss-120b",
-        temperature: float = 0.7,
+        model_name: str = "qwen/qwen3.8-27b",
+        temperature: float = 0.3,
         max_tokens: int = 2000,
         mock_mode: bool = False
     ):
@@ -399,19 +399,53 @@ class Node4DocumentGenerator:
     def process_from_node3(self, node3_output: dict) -> dict:
         """
         Processa saída do Nó 3 para gerar checklist.
-        
+
+        Node 3 retorna:
+            {
+                "total_chunks_processed": int,
+                "structured_analysis": {chunk_id: {documentation: [...], ...}},
+                "critical_analysis":    {chunk_id: {risk_level: ..., ...}}
+            }
+
         Args:
             node3_output: Saída do Nó 3
-            
+
         Returns:
             Dicionário com checklist gerado
         """
         logger.info("Processando saída do Nó 3")
-        
-        structured_info = node3_output.get("structured_info", {})
-        documentation = structured_info.get("documentation", [])
-        
+
+        # Guard: node3_output pode ser None se o Nó 3 falhou
+        if not node3_output:
+            return {
+                "checklist": {},
+                "resumo": {"total_documentos": 0, "obrigatorios": 0, "opcionais": 0, "categorias": 0},
+                "deadlines": []
+            }
+
+        # Tenta pegar documentos do llm_analysis (passagem única) primeiro,
+        # com fallback para structured_analysis (modo mock/regex)
+        llm_analysis = node3_output.get("llm_analysis") or {}
+        documentation: List[str] = list(llm_analysis.get("documentos_exigidos", []))
+        deadlines: List[str] = list(llm_analysis.get("prazos", []))
+
+        # Fallback: structured_analysis (modo mock)
         if not documentation:
+            structured_analysis = node3_output.get("structured_analysis", {})
+            for chunk_data in structured_analysis.values():
+                if isinstance(chunk_data, dict):
+                    documentation.extend(chunk_data.get("documentation", []))
+                    deadlines.extend(chunk_data.get("deadlines", []))
+
+        # Remove duplicatas preservando ordem
+        seen: set = set()
+        unique_docs: List[str] = []
+        for doc in documentation:
+            if doc not in seen and doc.strip():
+                seen.add(doc)
+                unique_docs.append(doc)
+
+        if not unique_docs:
             return {
                 "checklist": {},
                 "resumo": {
@@ -419,15 +453,17 @@ class Node4DocumentGenerator:
                     "obrigatorios": 0,
                     "opcionais": 0,
                     "categorias": 0
-                }
+                },
+                "deadlines": list(set(deadlines))
             }
-        
+
         # Categoriza documentos
-        categorized = self.categorize_documents(documentation)
-        
+        categorized = self.categorize_documents(unique_docs)
+
         # Gera checklist
         checklist = self.generate_complete_checklist(categorized)
-        
+        checklist["deadlines"] = list(set(deadlines))
+
         return checklist
     
     def process_complete_analysis(self, node3_analysis: dict) -> dict:

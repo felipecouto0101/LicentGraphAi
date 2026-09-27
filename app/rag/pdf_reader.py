@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pdfplumber
 
@@ -22,7 +23,7 @@ class PDFReader:
             pdf_path: Caminho para o arquivo PDF
 
         Returns:
-            Texto extraído do PDF
+            Texto extraído e limpo do PDF
 
         Raises:
             FileNotFoundError: Se o arquivo não existir
@@ -41,11 +42,56 @@ class PDFReader:
                     if page_text:
                         text_parts.append(page_text)
 
-            self.text = "\n".join(text_parts)
+            raw_text = "\n".join(text_parts)
+            self.text = self._clean_text(raw_text)
             return self.text
 
         except Exception as e:
             raise PDFReadError(f"Erro ao ler PDF: {e!s}")
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        """
+        Limpa o texto extraído do PDF.
+
+        Problemas comuns em PDFs de editais:
+        - Linhas com só números de página, cabeçalhos repetidos
+        - Palavras hifenizadas ao fim da linha (cor-\nrupção → corrupção)
+        - Múltiplos espaços e tabs
+        - Linhas de ruído (só dígitos, só pontuação, muito curtas)
+        """
+        # 1. Juntar palavras hifenizadas quebradas no fim de linha
+        text = re.sub(r"-\s*\n\s*", "", text)
+
+        # 2. Normalizar quebras de linha: 2+ quebras viram parágrafo, 1 vira espaço
+        text = re.sub(r"\n{3,}", "\n\n", text)          # 3+ \n → parágrafo
+        text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)    # \n isolado → espaço
+
+        # 3. Normalizar espaços múltiplos
+        text = re.sub(r"[ \t]{2,}", " ", text)
+
+        # 4. Remover linhas que são claramente ruído:
+        #    - Só dígitos (números de página)
+        #    - Menos de 15 caracteres úteis
+        #    - Só pontuação/símbolos
+        clean_lines = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                clean_lines.append("")
+                continue
+            # Ignora linha se for só números (número de página)
+            if re.fullmatch(r"\d+", stripped):
+                continue
+            # Ignora linhas muito curtas que não são títulos (sem letra suficiente)
+            if len(stripped) < 8 and not re.search(r"[A-Za-zÀ-ú]{3,}", stripped):
+                continue
+            clean_lines.append(line)
+
+        text = "\n".join(clean_lines)
+
+        # 5. Remover espaços no início/fim
+        return text.strip()
 
     def get_text(self) -> str:
         """Retorna o texto extraído do PDF."""

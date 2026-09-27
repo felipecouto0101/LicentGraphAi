@@ -12,31 +12,12 @@ class TextChunker:
         chunk_overlap: int = 200,
         separators: list[str] | None = None,
     ):
-        """
-        Inicializa o fragmentador de texto.
-
-        Args:
-            chunk_size: Tamanho máximo de cada chunk em caracteres
-            chunk_overlap: Sobreposição entre chunks para manter contexto
-            separators: Separadores personalizados para divisão inteligente
-        """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-        # Separadores otimizados para documentos de licitação
-        default_separators = [
-            "\n\n\n",  # Parágrafos múltiplos
-            "\n\n",  # Parágrafos
-            "\n",  # Linhas
-            ". ",  # Final de sentenças
-            ", ",  # Vírgulas
-            " ",  # Espaços
-            "",  # Caracteres individuais
-        ]
-
+        default_separators = ["\n\n", "\n", ". ", ", ", " ", ""]
         self.separators = separators or default_separators
 
-        # Inicializa o splitter do LangChain
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -45,32 +26,24 @@ class TextChunker:
         )
 
     def chunk_text(self, text: str) -> list[str]:
-        """
-        Divide o texto em chunks menores.
-
-        Args:
-            text: Texto completo do edital
-
-        Returns:
-            Lista de chunks de texto
-        """
+        """Divide o texto em chunks menores."""
         if not text or not text.strip():
             return []
-
-        chunks = self.text_splitter.split_text(text)
-        return chunks
+        return self.text_splitter.split_text(text)
 
     def chunk_by_sections(self, text: str) -> dict[str, list[str]]:
         """
         Divide o texto em chunks organizados por seções típicas de editais.
 
-        Args:
-            text: Texto completo do edital
+        Estratégia:
+        1. Divide o texto em parágrafos (blocos separados por linha em branco).
+        2. Classifica cada parágrafo na seção mais provável pelo título/conteúdo.
+        3. Chunka o conteúdo de cada seção individualmente.
 
-        Returns:
-            Dicionário com chunks organizados por seção
+        Isso evita os problemas do regex greedy anterior que gerava texto
+        corrompido ao capturar com `.*?` sem limite de linha.
         """
-        sections = {
+        sections: dict[str, list[str]] = {
             "bens": [],
             "prazos": [],
             "exigencias_tecnicas": [],
@@ -78,64 +51,65 @@ class TextChunker:
             "outros": [],
         }
 
-        # Padrões para identificar seções em editais
-        patterns = {
+        # Heurísticas de classificação por palavras no início do parágrafo
+        section_keywords: dict[str, list[str]] = {
             "bens": [
-                r"(?i)(objeto|bens|serviços|itens|especificações).*?(?=\n\n|\n[A-Z]|$)",
-                r"(?i)(quadro|tabela).*?(?=\n\n|\n[A-Z]|$)",
+                "objeto", "bem", "serviço", "item", "especificação", "tabela",
+                "quadro", "descrição", "produto", "material", "equipamento",
+                "aquisição", "fornecimento",
             ],
             "prazos": [
-                r"(?i)(prazo|vigência|duração|entrega).*?(?=\n\n|\n[A-Z]|$)",
-                r"(?i)(cronograma|calendar).*?(?=\n\n|\n[A-Z]|$)",
+                "prazo", "vigência", "duração", "entrega", "cronograma",
+                "calendário", "data", "vencimento", "início", "fim",
             ],
             "exigencias_tecnicas": [
-                r"(?i)(exigência|técnica|especificação técnica|requisito).*?(?=\n\n|\n[A-Z]|$)",
-                r"(?i)(norma|abnt|iso).*?(?=\n\n|\n[A-Z]|$)",
+                "exigência", "requisito", "técnica", "especificação técnica",
+                "norma", "abnt", "iso", "certificação", "padrão", "capacidade",
+                "qualificação técnica",
             ],
             "documentacao": [
-                r"(?i)(habilitação|documentação|certidão|licença).*?(?=\n\n|\n[A-Z]|$)",
-                r"(?i)(comprovação|declaração).*?(?=\n\n|\n[A-Z]|$)",
+                "habilitação", "documentação", "certidão", "licença",
+                "comprovação", "declaração", "atestado", "registro",
+                "regularidade", "cnpj", "cpf",
             ],
         }
 
-        # Primeiro, tenta extrair seções específicas
-        for section_name, section_patterns in patterns.items():
-            for pattern in section_patterns:
-                matches = re.finditer(pattern, text, re.MULTILINE | re.DOTALL)
-                for match in matches:
-                    section_text = match.group(0)
-                    if len(section_text) > 50:  # Ignora matches muito curtos
-                        chunks = self.chunk_text(section_text)
-                        sections[section_name].extend(chunks)
+        # Divide em parágrafos (2+ quebras de linha)
+        paragraphs = re.split(r"\n{2,}", text)
 
-        # Divide o restante do texto em "outros"
-        all_section_text = " ".join(
-            [" ".join(sections[key]) for key in sections if key != "outros"]
-        )
+        section_texts: dict[str, list[str]] = {k: [] for k in sections}
 
-        remaining_text = text
-        for section_text in all_section_text.split():
-            remaining_text = remaining_text.replace(section_text, "", 1)
+        for para in paragraphs:
+            para = para.strip()
+            if not para or len(para) < 30:
+                continue
 
-        if remaining_text.strip():
-            sections["outros"] = self.chunk_text(remaining_text.strip())
+            para_lower = para.lower()
+            assigned = False
+
+            for section, keywords in section_keywords.items():
+                for kw in keywords:
+                    # Palavra-chave nos primeiros 120 chars (título/início)
+                    if kw in para_lower[:120]:
+                        section_texts[section].append(para)
+                        assigned = True
+                        break
+                if assigned:
+                    break
+
+            if not assigned:
+                section_texts["outros"].append(para)
+
+        # Chunka cada seção
+        for section, paras in section_texts.items():
+            combined = "\n\n".join(paras)
+            if combined.strip():
+                sections[section] = self.chunk_text(combined)
 
         return sections
 
-    def get_chunk_metadata(
-        self, chunk: str, chunk_index: int, total_chunks: int
-    ) -> dict:
-        """
-        Gera metadados para um chunk.
-
-        Args:
-            chunk: Texto do chunk
-            chunk_index: Índice do chunk
-            total_chunks: Total de chunks
-
-        Returns:
-            Dicionário com metadados do chunk
-        """
+    def get_chunk_metadata(self, chunk: str, chunk_index: int, total_chunks: int) -> dict:
+        """Gera metadados para um chunk."""
         return {
             "chunk_id": chunk_index,
             "total_chunks": total_chunks,
@@ -144,28 +118,13 @@ class TextChunker:
             "line_count": len(chunk.split("\n")),
         }
 
-    def create_document_chunks(
-        self, text: str, metadata: dict | None = None
-    ) -> list[dict]:
-        """
-        Cria chunks no formato de documentos LangChain.
-
-        Args:
-            text: Texto completo
-            metadata: Metadados adicionais do documento
-
-        Returns:
-            Lista de documentos com metadados
-        """
+    def create_document_chunks(self, text: str, metadata: dict | None = None) -> list[dict]:
+        """Cria chunks no formato de documentos LangChain."""
         chunks = self.chunk_text(text)
-        documents = []
-
         base_metadata = metadata or {}
-
+        documents = []
         for i, chunk in enumerate(chunks):
             chunk_metadata = self.get_chunk_metadata(chunk, i, len(chunks))
             chunk_metadata.update(base_metadata)
-
             documents.append({"content": chunk, "metadata": chunk_metadata})
-
         return documents

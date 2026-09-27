@@ -1,253 +1,180 @@
-# LicitGraphAi - Analisador e Auditor Autônomo de Editais de Licitação
+# LicitGraphAi — Analisador Autônomo de Editais de Licitação
 
-Sistema inteligente para análise automática de editais de licitação pública (Nova Lei 14.133), utilizando IA para extrair pontos críticos, avaliar aptidão da empresa e gerar relatórios de riscos.
+Sistema inteligente para análise automática de editais de licitação pública (Lei 14.133/2021). Faz upload de um PDF, extrai o texto, gera embeddings, consulta o banco vetorial via RAG e usa IA para responder perguntas objetivas sobre o edital.
 
-## Stack Tecnológica (Implementado)
+---
 
-### Core
-- **Python 3.11+** - Linguagem principal
-- **LangChain** - Componentes de RAG (RecursiveCharacterTextSplitter)
-- **LangGraph** - Orquestração de workflow com estado compartilhado
+## Como funciona
 
-### Processamento de Documentos
-- **pdfplumber** - Extração robusta de texto de PDFs
-- **PyPDF2** - Backup/complemento para PDF
+```
+PDF → Extração de texto → Chunks → Embeddings (ChromaDB)
+                                          ↓
+                              Busca vetorial por 8 queries temáticas
+                                          ↓
+                              Chunks relevantes → LLM (Groq)
+                                          ↓
+                              Relatório estruturado por pergunta
+```
 
-### Inteligência Artificial
-- **Groq API** + **OpenAI GPT-OSS-120b** - Modelo de linguagem gratuito
-- **sentence-transformers** - Modelo de embeddings gratuito (all-MiniLM-L6-v2)
-- **ChromaDB** - Banco de dados vetorial para RAG
+### Pipeline de nós (LangGraph)
 
-### Utilitários
-- **python-dotenv** - Variáveis de ambiente
-- **pytest** - Testes
-- **black/ruff** - Formatação e linting
+| Nó | Responsabilidade |
+|----|-----------------|
+| **Nó 1** | Lê o PDF, limpa o texto e fragmenta em chunks por seção |
+| **Nó 2** | Gera embeddings com `sentence-transformers` e armazena no ChromaDB |
+| **Nó 3** | Consulta RAG: busca os chunks mais relevantes por query temática e envia ao LLM |
+| **Nó 4** | Categoriza os documentos exigidos (habilitação, fiscal, técnica, etc.) em checklist |
 
-## Arquitetura do Sistema
+### Perguntas respondidas pelo RAG
 
-### Fluxo de Nós Implementados
+1. Posso participar? *(requisitos de habilitação)*
+2. Quais são os prazos?
+3. Quanto custa e como pago?
+4. Como será a seleção ou avaliação?
+5. O que devo entregar ou produzir?
+6. Quais são as regras de eliminação?
+7. Quais documentos são exigidos?
+8. Pontos críticos e riscos
 
-1. **Nó 1: Leitor e Fragmentador** ✅
-   - Extrai texto do PDF do edital
-   - Fragmenta em partes menores (bens, prazos, exigências técnicas)
-   - Usa LangChain para chunking inteligente
-   - Suporta PDFs bem estruturados e mal estruturados (fallback)
+Para cada pergunta, o sistema busca os chunks mais relevantes no ChromaDB por similaridade vetorial e os envia ao LLM com um prompt focado — sem processar o edital inteiro de uma vez.
 
-2. **Nó 2: Geração de Embeddings** ✅
-   - Gera embeddings dos chunks usando sentence-transformers
-   - Armazena no ChromaDB (banco vetorial)
-   - Suporta busca semântica
-   - Processamento em batch para performance
+---
 
-3. **Nó 3: Análise de Requisitos com IA** ✅
-   - Analisa requisitos usando Groq API + OpenAI GPT-OSS-120b
-   - Extrai informações estruturadas (técnicos, prazos, documentação, objeto, riscos)
-   - Identifica pontos críticos e classifica riscos (ALTO/MÉDIO/BAIXO)
-   - Gera recomendações e resumo executivo
-   - Integração completa com Nó 2
+## Stack
 
-4. **Nó 4: Gerador de Checklist de Documentos** ✅
-   - Extrai documentos necessários do edital
-   - Categoriza documentos (habilitação, técnica, fiscal, jurídica, trabalhista)
-   - Gera checklist estruturado com prazos e observações
-   - Integração completa com Nó 3
-   - Resumo e recomendações
+- **Python 3.11+**
+- **LangGraph** — orquestração do pipeline com estado compartilhado
+- **LangChain** — chunking e integração com modelos
+- **pdfplumber** — extração de texto de PDFs
+- **sentence-transformers** (`all-MiniLM-L6-v2`) — geração de embeddings
+- **ChromaDB** — banco vetorial para busca semântica
+- **Groq API** + **Qwen 3.8 27B** — modelo LLM para análise
+- **FastAPI** — API REST para upload e processamento
+- **Streamlit** — interface web
 
-### Orquestração com LangGraph
-- **Workflow automático**: node_1 → node_2 → node_3 → node_4
-- **Estado compartilhado**: Todos os nós acessam o mesmo estado
-- **Orquestração centralizada**: Gerenciamento em um lugar só
-- **Fácil escalar**: Adicionar novos nós é simples
-
-### Próximos Nós (Pendentes)
-- Nó 5: Comparação com Perfil da Empresa
-- Nó 6: Geração de Relatório Final de Riscos
+---
 
 ## Instalação
 
-### Pré-requisitos
-- Python 3.11 ou superior
-- pip
-
-### Setup
-
-1. Clone o repositório
-2. Crie um ambiente virtual:
 ```bash
+# 1. Clone o repositório
+git clone <repo>
+cd LicitGraphAi
+
+# 2. Crie e ative o ambiente virtual
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-```
+venv\Scripts\activate      # Windows
+# source venv/bin/activate  # Linux/Mac
 
-3. Instale as dependências:
-```bash
+# 3. Instale as dependências
 pip install -r requirements.txt
-```
 
-4. Configure as variáveis de ambiente:
-```bash
+# 4. Configure as variáveis de ambiente
 cp .env.example .env
-# Edite .env com sua chave da API Groq (opcional para desenvolvimento)
+# Edite .env com sua chave da API Groq e NODE3_MOCK_MODE=false
 ```
 
-5. Obtenha sua chave da API Groq em: https://console.groq.com/ (opcional)
+Obtenha sua chave gratuita em: https://console.groq.com/
 
-## Estrutura do Projeto
+---
+
+## Configuração (.env)
+
+```env
+GROQ_API_KEY=sua_chave_aqui
+NODE3_MOCK_MODE=false        # false = IA real | true = extração por regex (dev)
+DEFAULT_MODEL=qwen/qwen3.8-27b
+CHROMA_PERSIST_DIRECTORY=./data/vector_db
+CHROMA_COLLECTION_NAME=licitacoes
+```
+
+---
+
+## Uso
+
+### Interface web (recomendado)
+
+```bash
+python start_app.py
+```
+
+Aguarde as mensagens de inicialização (~25s no primeiro start por conta do carregamento dos modelos).
+
+- Streamlit: http://localhost:8501
+- API Swagger: http://127.0.0.1:8000/docs
+
+Ou inicie manualmente em dois terminais:
+
+```bash
+# Terminal 1
+python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2
+streamlit run app/streamlit_app.py
+```
+
+### Programático
+
+```python
+from dotenv import load_dotenv
+load_dotenv()
+
+from app.rag.langgraph_workflow import run_licit_graph_pipeline
+
+result = run_licit_graph_pipeline("data/raw/uploads/edital.pdf")
+
+# Respostas RAG por pergunta
+for key, answer in result["analysis"]["rag_answers"].items():
+    print(f"\n{answer['label']}")
+    print(answer["resposta"])
+
+# Checklist de documentos
+print(result["checklist"]["resumo"])
+```
+
+---
+
+## Estrutura do projeto
 
 ```
 LicitGraphAi/
 ├── app/
-│   ├── api/               # API FastAPI
-│   │   ├── main.py       # Endpoints REST
-│   │   └── __init__.py
-│   ├── rag/              # Componentes RAG implementados
-│   │   ├── pdf_reader.py
-│   │   ├── text_chunker.py
+│   ├── api/
+│   │   └── main.py               # FastAPI: endpoints /upload, /analyze, /status
+│   ├── rag/
+│   │   ├── pdf_reader.py         # Extração e limpeza de texto do PDF
+│   │   ├── text_chunker.py       # Fragmentação por parágrafos/seções
 │   │   ├── node_1_reader_chunker.py
-│   │   ├── node_2_embeddings.py
-│   │   ├── node_3_analyzer.py
-│   │   ├── node_4_document_generator.py
-│   │   └── langgraph_workflow.py  # Orquestração LangGraph
-│   └── streamlit_app.py  # Interface web Streamlit
+│   │   ├── node_2_embeddings.py  # Embeddings + ChromaDB
+│   │   ├── node_3_analyzer.py    # RAG + LLM (Groq)
+│   │   ├── node_4_document_generator.py  # Checklist categorizado
+│   │   └── langgraph_workflow.py # Orquestração completa
+│   └── streamlit_app.py          # Interface web
 ├── data/
-│   ├── raw/             # PDFs originais
-│   │   └── uploads/     # Uploads da API
-│   ├── processed/       # Dados processados
-│   └── vector_db/       # ChromaDB
-├── tests/               # Testes (107 testes implementados)
-├── docs/                # Documentação
-├── examples/            # Exemplos de uso
-├── start_app.py         # Script para iniciar app completo
+│   ├── raw/uploads/              # PDFs enviados (ignorado pelo git)
+│   ├── processed/                # Dados processados (ignorado pelo git)
+│   └── vector_db/                # ChromaDB (ignorado pelo git)
+├── tests/                        # Testes automatizados
+├── examples/                     # Scripts de exemplo
+├── docs/
+├── start_app.py                  # Inicia FastAPI + Streamlit
+├── .env.example
 └── requirements.txt
 ```
 
-## Uso
+---
 
-### Exemplo Básico (Nó 1)
+## Testes
 
-```python
-from app.rag.node_1_reader_chunker import process_edital_pdf
-
-result = process_edital_pdf("data/raw/edital.pdf")
-print(f"Chunks gerados: {result['total_chunks']}")
-```
-
-### Exemplo de Integração (Nó 1 + Nó 2)
-
-```python
-from app.rag.node_2_embeddings import Node2EmbeddingGenerator
-
-node2 = Node2EmbeddingGenerator()
-result = node2.process_chunks(chunks, persist_directory="./data/vector_db")
-print(f"Embeddings gerados: {result['total_embeddings']}")
-```
-
-### Exemplo de Análise com IA (Nó 3)
-
-```python
-from app.rag.node_3_analyzer import Node3RequirementAnalyzer
-
-node3 = Node3RequirementAnalyzer(api_key="sua_chave_groq", mock_mode=False)
-result = node3.process_from_node2(chunks)
-print(f"Pontos críticos: {result['critical_analysis']}")
-print(f"Nível de risco: {result['overall_risk_level']}")
-```
-
-### Exemplo de Geração de Checklist (Nó 4)
-
-```python
-from app.rag.node_4_document_generator import Node4DocumentGenerator
-
-node4 = Node4DocumentGenerator(mock_mode=True)
-result = node4.process_from_node3(node3_analysis)
-print(f"Total de documentos: {result['resumo']['total_documentos']}")
-print(f"Categorias: {list(result['checklist'].keys())}")
-```
-
-### Exemplo com LangGraph (Workflow Completo)
-
-```python
-from app.rag.langgraph_workflow import run_licit_graph_pipeline
-
-# Executa o pipeline completo automaticamente
-final_state = run_licit_graph_pipeline("data/raw/edital.pdf")
-
-# Acessa os resultados
-print(f"Chunks: {len(final_state['chunks'])}")
-print(f"Embeddings: {final_state['embeddings']['total_embeddings']}")
-print(f"Análise: {final_state['analysis']}")
-print(f"Checklist: {final_state['checklist']}")
-```
-
-### Interface Web (Streamlit + FastAPI)
-
-Para usar a interface web completa:
-
-```bash
-# Inicia FastAPI + Streamlit automaticamente
-python start_app.py
-```
-
-Ou inicie manualmente:
-
-```bash
-# Terminal 1: Inicia FastAPI
-python -m uvicorn app.api.main:app --reload --host 127.0.0.1 --port 8000
-
-# Terminal 2: Inicia Streamlit
-streamlit run app/streamlit_app.py
-```
-
-Acesse:
-- **Streamlit**: http://localhost:8501
-- **API Swagger**: http://127.0.0.1:8000/docs
-
-### Executar Exemplos
-
-```bash
-python examples/example_node_1.py
-python examples/example_node_1_2_integration.py
-python examples/example_node_3_env.py
-python examples/test_groq_api.py
-python examples/example_langgraph.py  # Workflow LangGraph
-```
-
-### Executar Testes
-
-```bash
-pytest tests/test_node_1.py -v  # Testes do Nó 1
-pytest tests/test_node_2.py -v  # Testes do Nó 2
-pytest tests/test_node_3_step1.py -v  # Testes do Nó 3 (configuração)
-pytest tests/test_node_3_step2.py -v  # Testes do Nó 3 (análise básica)
-pytest tests/test_node_3_step3.py -v  # Testes do Nó 3 (extração estruturada)
-pytest tests/test_node_3_step4.py -v  # Testes do Nó 3 (pontos críticos)
-pytest tests/test_node_3_step5.py -v  # Testes do Nó 3 (integração)
-pytest tests/test_node_4_step1.py -v  # Testes do Nó 4 (configuração)
-pytest tests/test_node_4_step2.py -v  # Testes do Nó 4 (extração)
-pytest tests/test_node_4_step3.py -v  # Testes do Nó 4 (categorização)
-pytest tests/test_node_4_step4.py -v  # Testes do Nó 4 (checklist)
-pytest tests/test_node_4_step5.py -v  # Testes do Nó 4 (integração)
-pytest tests/test_langgraph.py -v  # Testes do LangGraph
-pytest tests/ -v                # Todos os testes (107 testes)
-```
-
-## Desenvolvimento
-
-### Testes
 ```bash
 pytest tests/ -v
 ```
 
-### Formatação de Código
+---
+
+## Desenvolvimento
+
 ```bash
 black app/
 ruff check app/
 ```
-
-## Documentação
-
-- [Documentação do Nó 1](docs/node_1_documentation.md)
-- [Exemplos de Integração](examples/example_node_1_2_integration.py)
-- [Exemplos do Nó 3](examples/example_node_3_env.py)
-- [Exemplos do LangGraph](examples/example_langgraph.py)
-- [Teste de API Groq](examples/test_groq_api.py)

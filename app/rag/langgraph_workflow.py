@@ -7,6 +7,7 @@ Orquestra todos os nós do sistema usando LangGraph com estado compartilhado.
 from typing import TypedDict, List, Dict, Optional
 from langgraph.graph import StateGraph, END
 import logging
+import os
 
 # Importar nós existentes
 from .node_1_reader_chunker import Node1ReaderChunker
@@ -100,11 +101,27 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
     Nó 3: Analisador de Requisitos (Wrapper para LangGraph)
     
     Analisa requisitos do edital usando IA.
+    Usa mock mode quando NODE3_MOCK_MODE=true no .env ou quando GROQ_API_KEY não está definida.
     """
     logger.info("Nó 3: Iniciando análise de requisitos")
     
     try:
-        node3 = Node3RequirementAnalyzer(mock_mode=True)  # Usa mock mode por padrão
+        api_key = os.getenv("GROQ_API_KEY", "")
+        mock_mode_env = os.getenv("NODE3_MOCK_MODE", "true").lower()
+        mock_mode = mock_mode_env == "true" or not api_key or api_key == "your_groq_api_key_here"
+        persist_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db")
+        collection  = os.getenv("CHROMA_COLLECTION_NAME", "licitacoes")
+
+        if mock_mode:
+            logger.info("Nó 3: Usando modo mock (NODE3_MOCK_MODE=true ou GROQ_API_KEY ausente)")
+        else:
+            logger.info("Nó 3: Usando API Groq real com RAG")
+
+        node3 = Node3RequirementAnalyzer(
+            mock_mode=mock_mode,
+            persist_directory=persist_dir,
+            collection_name=collection,
+        )
         result = node3.process_from_node2(state["chunks"])
         
         state["analysis"] = result
@@ -123,11 +140,16 @@ def node_4_document_generator(state: LicitGraphState) -> LicitGraphState:
     Nó 4: Gerador de Checklist (Wrapper para LangGraph)
     
     Gera checklist de documentos a partir da análise.
+    Usa mock mode quando NODE3_MOCK_MODE=true no .env ou quando GROQ_API_KEY não está definida.
     """
     logger.info("Nó 4: Iniciando geração de checklist")
     
     try:
-        node4 = Node4DocumentGenerator(mock_mode=True)  # Usa mock mode por padrão
+        api_key = os.getenv("GROQ_API_KEY", "")
+        mock_mode_env = os.getenv("NODE3_MOCK_MODE", "true").lower()
+        mock_mode = mock_mode_env == "true" or not api_key or api_key == "your_groq_api_key_here"
+        
+        node4 = Node4DocumentGenerator(mock_mode=mock_mode)
         result = node4.process_from_node3(state["analysis"])
         
         state["checklist"] = result
