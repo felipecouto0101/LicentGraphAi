@@ -166,6 +166,10 @@ def node_4_document_generator(state: LicitGraphState) -> LicitGraphState:
     Gera checklist de documentos a partir da análise.
     Usa demonstração somente com NODE3_MOCK_MODE=true.
     """
+    if state.get("error"):
+        logger.info("Nó 4: Ignorado porque uma etapa anterior falhou")
+        return state
+
     logger.info("Nó 4: Iniciando geração de checklist")
     
     try:
