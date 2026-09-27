@@ -45,6 +45,7 @@ ENV/
 
 # Vector Database
 data/vector_db/
+data/checkpoints/
 
 # Uploads (PDFs enviados via API)
 data/raw/uploads/
