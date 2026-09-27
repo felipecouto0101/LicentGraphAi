@@ -40,7 +40,7 @@ Edite o `.env` e substitua `your_groq_api_key_here` pela sua chave em `GROQ_API_
 python start_app.py
 ```
 
-Abra **http://localhost:8501** para usar a interface. A documentação da API fica em **http://127.0.0.1:8002/docs**. O primeiro início pode demorar enquanto o modelo de embeddings é carregado.
+Abra **http://localhost:8501** para usar a interface. A documentação da API fica em **http://127.0.0.1:8002/docs**. Na primeira análise, o carregamento do modelo de embeddings pode demorar; a API não precisa carregar esse modelo para responder a `/status`.
 
 Se preferir terminais separados, inicie a API e depois o Streamlit:
 
@@ -50,6 +50,14 @@ python -m streamlit run app/streamlit_app.py
 ```
 
 No Linux ou macOS, ative o ambiente com `source .venv/bin/activate` e crie o `.env` com `cp .env.example .env`.
+
+Se o iniciador indicar que a API encerrou ou não respondeu, execute a API sozinha para ver o erro original no terminal:
+
+```powershell
+python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002 --log-level debug
+```
+
+Verifique também se o Python ativo é o do ambiente virtual (`python -c "import sys; print(sys.executable)"`). Corrija a causa mostrada no traceback antes de repetir `python start_app.py`.
 
 ## Configuração
 
