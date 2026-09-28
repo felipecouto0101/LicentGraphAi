@@ -102,6 +102,51 @@ class TestTransientGroqFailures:
 
 
 class TestExplanationGrounding:
+    def test_pending_item_keeps_candidate_page_without_claiming_evidence(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        agg = {"requisitos_participacao": ["Registro no CREA"], "selecao": []}
+        chunks = [{"content": "Registro profissional no CREA é exigido.",
+                   "metadata": {"page": 18}}]
+
+        def invoke(messages):
+            entry = json.loads(messages[-1].content.split("ITENS: ", 1)[1])[0]
+            return SimpleNamespace(content=json.dumps({"explicacoes": [{
+                "id": entry["id"], "situacao": "incerta", "evidencia": None,
+                "explicacao": "O registro profissional precisa ser verificado antes da participação no processo.",
+                "explicacao_basica": "O tópico trata do registro profissional no CREA.",
+            }]}))
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+        result = node._explain_all_requirements(agg, chunks=chunks)["participacao"][0]
+        assert result["paginas_para_revisao"] == [18]
+        assert result["evidencia"] is None
+        assert result["situacao"] == "incerta"
+
+    def test_saved_pending_item_gets_page_without_another_llm_call(self, tmp_path, monkeypatch):
+        import json
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        node = object.__new__(Node3RequirementAnalyzer)
+        node._checkpoint_file = tmp_path / "saved.json"
+        monkeypatch.setattr(node, "_invoke_with_rotation", lambda _: pytest.fail("LLM não necessária"))
+        agg = {"requisitos_participacao": ["Registro no CREA"], "selecao": []}
+        saved = {"explanations": {"participacao": {"1": {
+            "id": 1, "item": "Registro no CREA", "situacao": "incerta",
+            "explicacao": "A empresa precisa de registro profissional.",
+        }}, "selecao": {}}}
+
+        result = node._explain_all_requirements(agg, saved, [{
+            "content": "O registro no CREA consta da exigência técnica.",
+            "metadata": {"page": 21},
+        }])
+        assert result["participacao"][0]["paginas_para_revisao"] == [21]
+        assert json.loads(node._checkpoint_file.read_text(encoding="utf-8"))[
+            "explanations"]["participacao"]["1"]["paginas_para_revisao"] == [21]
+
     def test_literal_quote_is_required_before_publishing_interpretation(self, monkeypatch):
         import json
         from types import SimpleNamespace
