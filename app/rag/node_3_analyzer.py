@@ -187,7 +187,7 @@ class Node3RequirementAnalyzer:
                         quota.get("tokens_remaining", "?"),
                         quota.get("requests_remaining", "?"))
 
-    def _before_groq_request(self, messages: list) -> None:
+    def _before_groq_request(self, messages: list, enforce_rpm: bool = True) -> None:
         """Espera pela janela de tokens e limita as chamadas por minuto."""
         quota = getattr(self, "_quota", None)
         if quota is None:
@@ -199,10 +199,11 @@ class Node3RequirementAnalyzer:
         # O header de requests representa RPD, não RPM. Um teto local
         # conservador cobre RPM até o primeiro 429, sem supor a cota da conta.
         rpm = max(1, int(os.getenv("GROQ_RPM_BUDGET", "10")))
+        rpm = min(rpm, getattr(self, "_rpm_budget_override", rpm))
         now = time.monotonic()
         while calls and now - calls[0] >= 60:
             calls.popleft()
-        if len(calls) >= rpm:
+        while enforce_rpm and len(calls) >= rpm:
             wait = max(0.0, 61 - (now - calls[0]))
             logger.info("Limite local de requisições: aguardando %.0fs", wait)
             time.sleep(wait)
@@ -276,7 +277,7 @@ class Node3RequirementAnalyzer:
         transient_failures = 0
         while True:
             try:
-                self._before_groq_request(messages)
+                self._before_groq_request(messages, enforce_rpm=rate_limit_failures == 0)
                 return self._invoke_groq(messages)
             except Exception as e:
                 self._record_quota(getattr(getattr(e, "response", None), "headers", None))
@@ -286,6 +287,19 @@ class Node3RequirementAnalyzer:
                 is_daily_limit = "tokens per day" in err_str.lower() or "TPD" in err_str
 
                 if is_rate_limit:
+                    headers = getattr(getattr(e, "response", None), "headers", None) or {}
+                    body = getattr(e, "body", None)
+                    details = body.get("error", body) if isinstance(body, dict) else {}
+                    if not isinstance(details, dict):
+                        details = {}
+                    logger.warning(
+                        "Groq 429: tipo=%s, código=%s, retry-after=%s; "
+                        "tokens/min restantes=%s, requisições/dia restantes=%s",
+                        details.get("type", "?"), details.get("code", "?"),
+                        headers.get("retry-after", "?"),
+                        headers.get("x-ratelimit-remaining-tokens", "?"),
+                        headers.get("x-ratelimit-remaining-requests", "?"),
+                    )
                     if is_daily_limit:
                         # Limite diário esgotado — tenta próxima chave
                         logger.warning(f"Chave {self._current_key_idx + 1} esgotou limite diário.")
@@ -300,6 +314,7 @@ class Node3RequirementAnalyzer:
                     else:
                         # O 429 pode indicar limite de tokens ou de requisições.
                         # Respeita o prazo informado pela API, sem assumir 60s.
+                        self._rpm_budget_override = 1
                         if rate_limit_failures >= 3:
                             raise RuntimeError(
                                 "Groq manteve o limite de uso (429) "
@@ -1310,8 +1325,19 @@ Regras:
                 raise ValueError("Regra sem título, citação ou trecho de origem válido")
             source_chunk = batch[chunk_index - 1]
             page = source_chunk.get("metadata", {}).get("page")
-            if page is None or literal(quote) not in literal(source_chunk.get("content", "")):
+            if page is None:
                 raise ValueError("Citação da regra não aparece no trecho e página informados")
+            if literal(quote) not in literal(source_chunk.get("content", "")):
+                # Um trecho_id incorreto não precisa descartar todo o lote se
+                # a citação literal estiver em outro chunk da mesma página.
+                matching = [
+                    candidate for candidate in batch + (preceding or [])
+                    if candidate.get("metadata", {}).get("page") == page
+                    and literal(quote) in literal(candidate.get("content", ""))
+                ]
+                if not matching:
+                    raise ValueError("Citação da regra não aparece no trecho e página informados")
+                source_chunk = matching[0]
             condition_supported = not condition or any(
                 c.get("metadata", {}).get("page") == page
                 and literal(condition) in literal(c.get("content", ""))
