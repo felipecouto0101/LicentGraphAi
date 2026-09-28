@@ -30,7 +30,11 @@ class Node3RequirementAnalyzer:
 
     CHECKPOINT_VERSION = 1
     # Mudanças no texto das explicações não devem descartar os lotes de extração.
-    EXPLANATION_VERSION = 3
+    EXPLANATION_VERSION = 4
+    OLD_PENDING_EXPLANATION = (
+        "Item extraído sem interpretação confirmada pelos trechos selecionados; "
+        "requer revisão da cláusula original."
+    )
 
     def __init__(
         self,
@@ -1256,8 +1260,20 @@ Regras:
             logger.info("Retomando análise: %s/%s lotes de extração já concluídos",
                         saved["next_batch"], total_batches)
             if saved.get("explanation_version") != self.EXPLANATION_VERSION:
-                logger.info("Refazendo explicações com as instruções atualizadas; mantendo a extração")
-                saved["explanations"] = {"participacao": {}, "selecao": {}}
+                if saved.get("explanation_version") == 3:
+                    logger.info("Refazendo apenas explicações pendentes; mantendo as confirmadas e a extração")
+                    saved["explanations"] = {
+                        topic: {
+                            key: row for key, row in
+                            (saved["explanations"].get(topic) or {}).items()
+                            if isinstance(row, dict)
+                            and row.get("explicacao") != self.OLD_PENDING_EXPLANATION
+                        }
+                        for topic in ("participacao", "selecao")
+                    }
+                else:
+                    logger.info("Refazendo explicações com as instruções atualizadas; mantendo a extração")
+                    saved["explanations"] = {"participacao": {}, "selecao": {}}
                 saved["explanation_version"] = self.EXPLANATION_VERSION
                 self._save_checkpoint(saved)
             return saved
@@ -1410,6 +1426,10 @@ Regras:
                     "Explique TODOS os itens abaixo, um por um, em português simples para quem "
                     "nunca participou de uma licitação. Para cada ID, escreva até 2 frases "
                     "úteis: explique a regra e seu efeito prático, sem repetir o título. "
+                    "Também forneça explicacao_basica: uma frase que esclareça apenas "
+                    "o significado do título, sem dados, consequências, pessoas, etapas "
+                    "ou condições que não estejam no próprio título. Essa frase será "
+                    "mostrada como leitura preliminar se a evidência não for verificável. "
                     "Use o item e o contexto do mesmo documento. Trechos candidatos são "
                     "encontrados por palavras e podem ser irrelevantes. Para cada ID, "
                     "cite literalmente um trecho candidato que sustente a interpretação "
@@ -1431,6 +1451,7 @@ Regras:
                     "Não agrupe, omita ou renumere IDs. "
                     "Responda somente JSON no formato "
                     '{"explicacoes":[{"id":1,"explicacao":"Texto claro.",'
+                    '"explicacao_basica":"Significado do título em linguagem simples.",'
                     '"situacao":"aplicavel","evidencia":{"pagina":1,'
                     '"trecho":"Frase literal do trecho candidato."}}]}. '
                     "Para situacao incerta, evidencia pode ser null. "
@@ -1460,14 +1481,32 @@ Regras:
                             status = row.get("situacao")
                             if status not in {"aplicavel", "condicional", "incerta"}:
                                 status = "incerta"
+                            basic = row.get("explicacao_basica")
+                            if not (isinstance(basic, str) and len(basic.split()) >= 5
+                                    and self._numeric_claims_supported(
+                                        basic, entry["item"], ""
+                                    )):
+                                basic = None
                             if chunks is not None and (
                                 evidence is None or status == "incerta"
                                 or not self._numeric_claims_supported(
                                     row["explicacao"], entry["item"], evidence["trecho"]
                                 )
                             ):
+                                preliminary = (
+                                    row["explicacao"].strip()
+                                    if evidence and self._numeric_claims_supported(
+                                        row["explicacao"], entry["item"], evidence["trecho"]
+                                    ) else basic
+                                ) or (
+                                    row["explicacao"].strip()
+                                    if self._numeric_claims_supported(
+                                        row["explicacao"], entry["item"], ""
+                                    ) else "O tópico menciona " + entry["item"].rstrip(".") + "."
+                                )
                                 result = {**entry, "situacao": "incerta", "evidencia": evidence,
-                                          "explicacao": "Item extraído sem interpretação confirmada pelos trechos selecionados; requer revisão da cláusula original."}
+                                          "explicacao": preliminary,
+                                          "explicacao_preliminar": True}
                             else:
                                 result = {**entry, "situacao": status, "evidencia": evidence,
                                           "explicacao": row["explicacao"].strip()}
