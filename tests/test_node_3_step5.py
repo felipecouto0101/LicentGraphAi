@@ -9,6 +9,84 @@ from typing import Dict, List
 
 
 class TestTransientGroqFailures:
+    def test_raw_response_tracks_remaining_quota_without_extra_call(self):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer.model_name = "qwen/qwen3.8-27b"
+        analyzer.temperature = 0.3
+        analyzer.max_tokens = 2500
+        calls = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                headers={"x-ratelimit-remaining-tokens": "3500",
+                         "x-ratelimit-limit-tokens": "8000",
+                         "x-ratelimit-reset-tokens": "31s",
+                         "x-ratelimit-remaining-requests": "44"},
+                parse=lambda: SimpleNamespace(choices=[SimpleNamespace(
+                    message=SimpleNamespace(content='{"ok": true}'))]),
+            )
+
+        analyzer.llm = SimpleNamespace(client=SimpleNamespace(
+            with_raw_response=SimpleNamespace(create=create)))
+        response = analyzer._invoke_with_rotation([module.HumanMessage(content="teste")])
+        assert response.content == '{"ok": true}'
+        assert len(calls) == 1
+        assert analyzer._quota["tokens_remaining"] == 3500
+        assert analyzer._quota["requests_remaining"] == 44
+
+    def test_waits_for_token_reset_before_next_request(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer.max_tokens = 2500
+        clock = [100.0]
+        waits = []
+        analyzer._quota = {"tokens_remaining": 1200, "tokens_limit": 8000,
+                           "tokens_reset_at": 130.0, "requests_remaining": 20}
+        analyzer.llm = SimpleNamespace(invoke=lambda _: SimpleNamespace(content="ok"))
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+        def sleep(seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+        monkeypatch.setattr(module.time, "sleep", sleep)
+        assert analyzer._invoke_with_rotation(["prompt"]).content == "ok"
+        assert waits == [31.0]
+        assert analyzer._quota["tokens_remaining"] == 8000
+
+    def test_daily_request_limit_stops_before_sending(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer._quota = {"requests_remaining": 0, "requests_reset_at": 5000.0}
+        analyzer.llm = SimpleNamespace(invoke=lambda _: pytest.fail("unexpected API call"))
+        monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+        with pytest.raises(RuntimeError, match="requisições por dia esgotada"):
+            analyzer._invoke_with_rotation(["prompt"])
+
+    def test_local_rpm_budget_paces_calls(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        clock = [100.0]
+        waits = []
+        analyzer.llm = SimpleNamespace(invoke=lambda _: SimpleNamespace(content="ok"))
+        monkeypatch.setenv("GROQ_RPM_BUDGET", "2")
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+        def sleep(seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+        monkeypatch.setattr(module.time, "sleep", sleep)
+        for _ in range(3):
+            assert analyzer._invoke_with_rotation(["prompt"]).content == "ok"
+        assert waits == [61.0]
+
     def test_minute_limit_reports_real_cause_without_rotating_keys(self, monkeypatch):
         from types import SimpleNamespace
         from app.rag import node_3_analyzer as module
