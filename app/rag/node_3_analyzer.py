@@ -28,9 +28,11 @@ class Node3RequirementAnalyzer:
     - Analisar requisitos de editais
     """
 
-    CHECKPOINT_VERSION = 1
+    # O esquema 2 exige origem literal para cada regra. Checkpoints antigos
+    # continuam no disco, mas não podem comprovar a origem de seus títulos.
+    CHECKPOINT_VERSION = 2
     # Mudanças no texto das explicações não devem descartar os lotes de extração.
-    EXPLANATION_VERSION = 4
+    EXPLANATION_VERSION = 5
     OLD_PENDING_EXPLANATION = (
         "Item extraído sem interpretação confirmada pelos trechos selecionados; "
         "requer revisão da cláusula original."
@@ -41,7 +43,7 @@ class Node3RequirementAnalyzer:
         api_key: str | None = None,
         model_name: str = "qwen/qwen3.8-27b",
         temperature: float = 0.3,
-        max_tokens: int = 1600,
+        max_tokens: int = 2500,
         mock_mode: bool = False,
         persist_directory: str = "./data/vector_db",
         collection_name: str = "licitacoes",
@@ -1080,7 +1082,7 @@ Regras:
         em uma unica chamada ao LLM.
         """
         context = "\n\n".join(
-            f"[Trecho {i+1}]\n{c['content'].strip()}"
+            f"[Trecho {i+1}, página {c.get('metadata', {}).get('page', 'não informada')}]\n{c['content'].strip()}"
             for i, c in enumerate(chunks)
             if c.get("content", "").strip()
         )
@@ -1098,10 +1100,9 @@ Responda SOMENTE com JSON valido (sem markdown):
   "documentos_execucao": ["documentos a produzir ou entregar somente apos a contratacao, se a etapa estiver explicita"],
   "anexos_referencia": ["anexos e documentos fornecidos pelo orgao para consulta, sem pedido de entrega pelo licitante"],
   "pendencias_documentais": ["documentos citados cuja etapa ou exigencia de entrega nao ficou clara nos trechos"],
-  "requisitos_participacao": ["cada requisito objetivo para participar, ex: CNPJ ativo, Registro no CREA"],
+  "regras": [{{"tipo":"participacao ou selecao", "titulo":"regra completa e fiel ao texto", "trecho_id":1, "citacao":"frase literal da cláusula", "condicao":"condição literal que limita a regra, ou string vazia"}}],
   "prazos": ["cada prazo com valor, ex: 90 dias corridos para execucao, 30 dias para pagamento"],
   "custos": ["valores e formas de pagamento encontrados"],
-  "selecao": ["etapas e criterios de selecao encontrados"],
   "entregas": ["o que deve ser entregue ou executado"],
   "eliminacao": ["causas de eliminacao ou penalidades com valores"],
   "riscos": ["riscos e pontos criticos objetivos"],
@@ -1113,15 +1114,92 @@ Regras:
 - Classifique cada documento em UMA das quatro listas: entrega na proposta/habilitacao,
   entrega apos contratacao, anexo fornecido pelo orgao ou etapa incerta.
 - Projeto Basico, minutas e anexos para consulta nao sao documentos do checklist.
-- Condicoes, proibicoes e atividades vao em requisitos_participacao, eliminacao ou entregas.
+- Condicoes, proibicoes e atividades vao em regras, eliminacao ou entregas.
 - Nao crie um documento a partir de uma obrigacao que nao pede comprovante explicito.
-- Em selecao, inclua somente etapas da disputa, julgamento e avaliacao de propostas.
-- Em requisitos_participacao, inclua condicoes de participacao e habilitacao.
+- Em regras, tipo selecao abrange disputa, julgamento e avaliacao de propostas;
+  participacao abrange condicoes de participacao e habilitacao. Obrigações
+  exclusivas da execução contratual vão em entregas, não em participacao.
+- Para CADA regra, informe trecho_id e uma citacao literal do próprio trecho.
+  Use uma frase curta da cláusula (até 350 caracteres), preservando seu sentido.
+  O titulo deve preservar sujeito, condição e consequência, sem inverter a
+  relação entre valores. Não extraia um título de uma frase subordinada sem
+  considerar o início da cláusula; quando faltar contexto, não crie a regra.
+- Se a regra depender de "caso", "se", "quando", "desde que" ou de uma
+  modalidade alternativa, copie a condição literal em condicao. A condição
+  deve existir em algum trecho desta mesma página no lote. Não a trate como
+  aplicável apenas porque está descrita no documento.
 - Nao repita um mesmo fato com palavras diferentes no mesmo campo.
 - Se trechos parecerem contraditorios, preserve as formulacoes sem escolher uma como correta.
 - Se nao ha informacao para um campo, use lista vazia ou string vazia.
 - Seja conciso: cada item em no maximo 15 palavras.
 """
+
+    @staticmethod
+    def _verify_extracted_rules(rows: list, batch: list[dict]) -> dict[str, list[dict]]:
+        """Liga cada regra à página e a texto literal do chunk informado."""
+        if not isinstance(rows, list):
+            raise ValueError("Regras sem fontes: lista 'regras' ausente")
+
+        def literal(value: str) -> str:
+            return " ".join(value.split()).casefold()
+
+        sources = {"participacao": [], "selecao": []}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("tipo") not in sources:
+                raise ValueError("Regra sem tipo válido")
+            title, quote, condition = (row.get("titulo"), row.get("citacao"),
+                                       row.get("condicao", ""))
+            chunk_index = row.get("trecho_id")
+            if (not isinstance(title, str) or len(title.strip()) < 5
+                    or not isinstance(quote, str) or not 15 <= len(quote.strip()) <= 750
+                    or not isinstance(condition, str)
+                    or type(chunk_index) is not int or not 1 <= chunk_index <= len(batch)):
+                raise ValueError("Regra sem título, citação ou trecho de origem válido")
+            source_chunk = batch[chunk_index - 1]
+            page = source_chunk.get("metadata", {}).get("page")
+            if page is None or literal(quote) not in literal(source_chunk.get("content", "")):
+                raise ValueError("Citação da regra não aparece no trecho e página informados")
+            if condition and not any(
+                c.get("metadata", {}).get("page") == page
+                and literal(condition) in literal(c.get("content", ""))
+                for c in batch
+            ):
+                raise ValueError("Condição da regra não aparece na página informada")
+            if not condition and re.search(
+                r"(?i)(?:^|[.;]\s*)\s*(?:\d+(?:\.\d+)*\.?\s*)?"
+                r"(?:caso|quando|desde que|na hipótese de)\b", quote.strip()
+            ):
+                condition = quote
+            sources[row["tipo"]].append({
+                "item": title.strip(), "pagina": page, "citacao": quote.strip(),
+                "condicao": condition.strip(),
+                "chunk_id": source_chunk.get("metadata", {}).get("chunk_id"),
+            })
+        return sources
+
+    def _extract_verified_batch(self, batch: list[dict], system_msg) -> tuple[dict, dict]:
+        """Repete somente respostas malformadas ou com fonte não comprovada."""
+        fields = ("documentos", "documentos_execucao", "anexos_referencia",
+                  "pendencias_documentais", "prazos", "custos", "entregas",
+                  "eliminacao", "riscos")
+        for attempt in range(3):
+            response = self._invoke_with_rotation([
+                system_msg, HumanMessage(content=self._build_unified_prompt(batch))
+            ])
+            parsed = self._parse_llm_json(response.content)
+            try:
+                if any(not isinstance(parsed.get(field), list) or
+                       any(not isinstance(item, str) for item in parsed[field])
+                       for field in fields):
+                    raise ValueError("JSON de extração incompleto ou inválido")
+                return parsed, self._verify_extracted_rules(parsed.get("regras"), batch)
+            except ValueError:
+                if attempt == 2:
+                    raise
+                logger.warning("Fonte ou JSON inválido no lote; repetindo resposta (%s/3)",
+                               attempt + 2)
+                time.sleep(8)
+        raise RuntimeError("Lote sem fonte verificável")
 
     @staticmethod
     def _report_context(agg: dict, limit_per_topic: int = 12) -> tuple[str, dict]:
@@ -1237,10 +1315,22 @@ Regras:
         fresh = {
             "version": self.CHECKPOINT_VERSION, "fingerprint": fingerprint,
             "next_batch": 0, "agg": empty_agg, "max_risk": "BAIXO",
+            "rule_sources": {"participacao": [], "selecao": []},
             "explanation_version": self.EXPLANATION_VERSION,
             "explanations": {"participacao": {}, "selecao": {}},
         }
         if not self._checkpoint_file or not self._checkpoint_file.exists():
+            if directory:
+                legacy_payload = json.loads(payload)
+                legacy_payload["version"] = 1
+                old_fingerprint = hashlib.sha256(json.dumps(
+                    legacy_payload, ensure_ascii=False, sort_keys=True,
+                ).encode("utf-8")).hexdigest()
+                if (Path(directory) / f"{old_fingerprint}.json").exists():
+                    logger.info(
+                        "Checkpoint anterior preservado; reextraindo regras para registrar "
+                        "cláusula e página no novo formato"
+                    )
             return fresh
         try:
             saved = json.loads(self._checkpoint_file.read_text(encoding="utf-8"))
@@ -1255,6 +1345,11 @@ Regras:
                     or any(not isinstance(saved["agg"][key], type(value))
                            for key, value in empty_agg.items())
                     or saved.get("max_risk") not in {"ALTO", "MEDIO", "BAIXO"}
+                    or not isinstance(saved.get("rule_sources"), dict)
+                    or any(not isinstance(saved["rule_sources"].get(topic), list)
+                           for topic in ("participacao", "selecao"))
+                    or len(saved["rule_sources"]["participacao"]) != len(saved["agg"].get("requisitos_participacao", []))
+                    or len(saved["rule_sources"]["selecao"]) != len(saved["agg"].get("selecao", []))
                     or not isinstance(saved.get("explanations"), dict)):
                 raise ValueError("checkpoint incompatível")
             logger.info("Retomando análise: %s/%s lotes de extração já concluídos",
@@ -1369,9 +1464,45 @@ Regras:
         numbers = lambda value: set(re.findall(r"\d+(?:[.,]\d+)*", value))
         return numbers(explanation) <= numbers(item) | numbers(quote)
 
+    @staticmethod
+    def _source_context(source: dict, chunks: list[dict]) -> str:
+        """Inclui o começo da cláusula anterior se ela estiver na mesma página."""
+        for index, chunk in enumerate(chunks):
+            if (chunk.get("metadata", {}).get("page") == source["pagina"]
+                    and chunk.get("metadata", {}).get("chunk_id") == source["chunk_id"]):
+                previous = chunks[index - 1] if index else None
+                prefix = (previous["content"][-600:] if previous
+                          and previous.get("metadata", {}).get("page") == source["pagina"]
+                          else "")
+                content = chunk["content"]
+                offset = content.find(source["citacao"])
+                start = max(0, offset - 550) if offset >= 0 else 0
+                return (prefix + "\n" + content[start:start + 1450]).strip()
+        return source["citacao"]
+
+    @staticmethod
+    def _mode_applicability(condition: str, cover: str) -> str | None:
+        """Compara modalidades nomeadas na condição e no cabeçalho do documento."""
+        selected = re.search(r"(?im)^\s*MODO\s+DE\s+DISPUTA\s*:\s*([^\n]+)", cover)
+        alternative = re.search(
+            r"(?i)modo\s+de\s+disputa\s*[\"“']([^\"”']+)[\"”']", condition
+        )
+        if not selected or not alternative:
+            return None
+        if not re.fullmatch(r"[\wÀ-ÿ ]{2,40}", selected.group(1).strip()):
+            return None
+
+        def normalize(value: str) -> str:
+            value = unicodedata.normalize("NFKD", value.casefold())
+            return " ".join("".join(c for c in value if not unicodedata.combining(c)).split())
+
+        return ("aplicavel" if normalize(selected.group(1)) == normalize(alternative.group(1))
+                else "nao_aplicavel")
+
     def _explain_all_requirements(
         self, agg: dict, checkpoint: dict | None = None,
         chunks: list[dict] | None = None,
+        rule_sources: dict[str, list[dict]] | None = None,
     ) -> dict[str, list[dict]]:
         """Explica cada item extraído; recusa respostas com itens faltando ou trocados."""
         import json
@@ -1394,7 +1525,11 @@ Regras:
 
         for task_index, (topic, items, offset) in enumerate(tasks, 1):
             batch = [
-                {"id": i + 1, "item": item}
+                {"id": i + 1, "item": item, **({"fonte": {
+                    **rule_sources[topic][i],
+                    "contexto": self._source_context(rule_sources[topic][i], chunks or []),
+                }}
+                   if rule_sources is not None else {})}
                 for i, item in enumerate(items[offset:offset + batch_size], offset)
             ]
             if _progress_callback:
@@ -1419,9 +1554,11 @@ Regras:
             for entry in batch:
                 existing = explanations_by_id.get(entry["id"])
                 if existing and existing.get("situacao") == "incerta" and "paginas_para_revisao" not in existing:
-                    existing["paginas_para_revisao"] = self._explanation_context(
-                        [entry], agg, chunks or []
-                    )[str(entry["id"])]["paginas_candidatas"]
+                    existing["paginas_para_revisao"] = (
+                        [entry["fonte"]["pagina"]] if entry.get("fonte") else
+                        self._explanation_context([entry], agg, chunks or [])[
+                            str(entry["id"])]["paginas_candidatas"]
+                    )
                     enriched = True
             if enriched and checkpoint is not None:
                 self._save_checkpoint(checkpoint)
@@ -1449,11 +1586,14 @@ Regras:
                     "o significado do título, sem dados, consequências, pessoas, etapas "
                     "ou condições que não estejam no próprio título. Essa frase será "
                     "mostrada como leitura preliminar se a evidência não for verificável. "
-                    "Use o item e o contexto do mesmo documento. Trechos candidatos são "
-                    "encontrados por palavras e podem ser irrelevantes. Para cada ID, "
-                    "cite literalmente um trecho candidato que sustente a interpretação "
-                    "e informe a página, ou declare situacao=incerta. "
-                    "Classifique situacao como aplicavel, condicional ou incerta. "
+                    "Use o item e o contexto do mesmo documento. Se o item trouxer "
+                    "fonte, ela foi copiada literalmente do PDF: explique APENAS essa "
+                    "cláusula e sua condição; não substitua a página por outra busca. "
+                    "Se a fonte contradisser o título, diga que há inconsistência "
+                    "e use situacao=incerta. Somente quando não houver fonte: trechos "
+                    "candidatos encontrados por palavras podem ser irrelevantes; "
+                    "cite um trecho candidato ou declare situacao=incerta. "
+                    "Classifique situacao como aplicavel, condicional, nao_aplicavel ou incerta. "
                     "Preserve todas as condições, exceções, etapas e sujeitos da regra. "
                     "Uma regra alternativa ou hipotética não se torna aplicável apenas "
                     "por estar descrita. Compare-a com os dados gerais deste documento "
@@ -1476,7 +1616,7 @@ Regras:
                     "Para situacao incerta, evidencia pode ser null. "
                     f"\nTEMA: {topic}\nCABEÇALHO DO DOCUMENTO: {cover}"
                     f"\nCONTEXTO POR ID: "
-                    f"{json.dumps(self._explanation_context(missing, agg, chunks or []), ensure_ascii=False)}"
+                    f"{json.dumps({} if rule_sources is not None else self._explanation_context(missing, agg, chunks or []), ensure_ascii=False)}"
                     f"\nITENS: {json.dumps(missing, ensure_ascii=False)}"
                 )
                 invoked_this_task = True
@@ -1494,12 +1634,29 @@ Regras:
                                 and isinstance(row.get("explicacao"), str)
                                 and len(row["explicacao"].split()) >= 8):
                             entry = next(item for item in missing if item["id"] == row["id"])
-                            context = self._explanation_context([entry], agg, chunks or [])[
-                                str(row["id"])]
+                            source = entry.get("fonte")
+                            context = ({"trechos_candidatos": [],
+                                        "paginas_candidatas": [source["pagina"]]}
+                                       if source else self._explanation_context(
+                                           [entry], agg, chunks or [])[str(row["id"])])
                             candidates = context["trechos_candidatos"]
-                            evidence = self._valid_explanation_evidence(row, candidates)
+                            evidence = ({"pagina": source["pagina"], "trecho": source["citacao"]}
+                                        if source else self._valid_explanation_evidence(row, candidates))
                             status = row.get("situacao")
-                            if status not in {"aplicavel", "condicional", "incerta"}:
+                            if status not in {"aplicavel", "condicional", "nao_aplicavel", "incerta"}:
+                                status = "incerta"
+                            if source and source.get("condicao") and status == "aplicavel":
+                                status = "condicional"
+                            mode_status = None
+                            if source and source.get("condicao"):
+                                mode_status = self._mode_applicability(source["condicao"], cover)
+                                if mode_status == "nao_aplicavel":
+                                    status = "nao_aplicavel"
+                            if status == "nao_aplicavel" and mode_status != "nao_aplicavel":
+                                status = "condicional" if source and source.get("condicao") else "incerta"
+                            if (source and not source.get("condicao") and status == "aplicavel"
+                                    and re.search(r"(?i)\b(?:subitem supra|item anterior|procedimento de que trata)\b",
+                                                  source["citacao"])):
                                 status = "incerta"
                             basic = row.get("explicacao_basica")
                             if not (isinstance(basic, str) and len(basic.split()) >= 5
@@ -1510,13 +1667,15 @@ Regras:
                             if chunks is not None and (
                                 evidence is None or status == "incerta"
                                 or not self._numeric_claims_supported(
-                                    row["explicacao"], entry["item"], evidence["trecho"]
+                                    row["explicacao"], entry["item"],
+                                    evidence["trecho"] + " " + (source.get("condicao", "") if source else "")
                                 )
                             ):
                                 preliminary = (
                                     row["explicacao"].strip()
                                     if evidence and self._numeric_claims_supported(
-                                        row["explicacao"], entry["item"], evidence["trecho"]
+                                        row["explicacao"], entry["item"],
+                                        evidence["trecho"] + " " + (source.get("condicao", "") if source else "")
                                     ) else basic
                                 ) or (
                                     row["explicacao"].strip()
@@ -1525,11 +1684,13 @@ Regras:
                                     ) else "O tópico menciona " + entry["item"].rstrip(".") + "."
                                 )
                                 result = {**entry, "situacao": "incerta", "evidencia": evidence,
+                                          "condicao": source.get("condicao", "") if source else "",
                                           "explicacao": preliminary,
                                           "explicacao_preliminar": True,
                                           "paginas_para_revisao": context["paginas_candidatas"]}
                             else:
                                 result = {**entry, "situacao": status, "evidencia": evidence,
+                                          "condicao": source.get("condicao", "") if source else "",
                                           "explicacao": row["explicacao"].strip()}
                             explanations_by_id[row["id"]] = result
                             if checkpoint is not None:
@@ -1621,33 +1782,38 @@ Regras:
                     itens_encontrados=total_itens,
                 )
             try:
-                prompt = self._build_unified_prompt(batch)
-                response = self._invoke_with_rotation(
-                    [system_msg, HumanMessage(content=prompt)], SLEEP_BETWEEN
-                )
-                parsed = self._parse_llm_json(response.content)
-                fields = ("documentos", "documentos_execucao", "anexos_referencia",
-                          "pendencias_documentais", "requisitos_participacao", "prazos",
-                          "custos", "selecao", "entregas", "eliminacao", "riscos")
-                if any(not isinstance(parsed.get(field), list) or
-                       any(not isinstance(item, str) for item in parsed[field])
-                       for field in fields):
-                    raise ValueError("JSON de extração incompleto ou inválido")
+                parsed, extracted_rules = self._extract_verified_batch(batch, system_msg)
 
                 if not agg["objeto"] and parsed.get("objeto"):
                     agg["objeto"] = parsed["objeto"]
 
                 for field in ["documentos", "documentos_execucao", "anexos_referencia",
-                               "pendencias_documentais", "requisitos_participacao", "prazos",
-                               "custos", "selecao", "entregas", "eliminacao", "riscos"]:
+                               "pendencias_documentais", "prazos", "custos", "entregas",
+                               "eliminacao", "riscos"]:
                     add_unique(agg[field], parsed.get(field, []))
+
+                for topic, field in (("participacao", "requisitos_participacao"),
+                                     ("selecao", "selecao")):
+                    existing = {
+                        (normalized(source["item"]), normalized(source["citacao"]),
+                         normalized(source["condicao"]))
+                        for source in checkpoint["rule_sources"][topic]
+                    }
+                    for source in extracted_rules[topic]:
+                        key = (normalized(source["item"]), normalized(source["citacao"]),
+                               normalized(source["condicao"]))
+                        if key not in existing:
+                            checkpoint["rule_sources"][topic].append(source)
+                            agg[field].append(source["item"])
+                            existing.add(key)
 
                 batch_risk = parsed.get("nivel_risco", "BAIXO").upper()
                 if risk_order.get(batch_risk, 0) > risk_order.get(max_risk, 0):
                     max_risk = batch_risk
 
                 gained = sum(len(parsed.get(f, [])) for f in
-                             ["documentos","requisitos_participacao","prazos","eliminacao","riscos"])
+                             ["documentos","prazos","eliminacao","riscos"]) + sum(
+                                 len(rows) for rows in extracted_rules.values())
                 if gained:
                     total_acc = sum(len(v) for v in agg.values() if isinstance(v, list))
                     logger.info(f"  batch {b_idx+1}/{total}: +{gained} itens (total={total_acc})")
@@ -1724,7 +1890,9 @@ Regras:
 
         # A síntese acima é uma amostra; esta etapa cobre TODOS os itens das duas
         # seções mostradas na interface, inclusive quando há muitos itens.
-        detailed_explanations = self._explain_all_requirements(agg, checkpoint, chunks)
+        detailed_explanations = self._explain_all_requirements(
+            agg, checkpoint, chunks, checkpoint["rule_sources"]
+        )
 
         # Mapeia para o formato compativel com display e Node 4
         # rag_answers simula as respostas por pergunta para a tab "Perguntas Respondidas"
@@ -1836,6 +2004,7 @@ Regras:
             "anexos_referencia": agg["anexos_referencia"],
             "pendencias_documentais": agg["pendencias_documentais"],
             "detailed_explanations": detailed_explanations,
+            "rule_sources": checkpoint["rule_sources"],
             "rag_sources": source_refs,
             "explanatory_report": explanatory_report,
             "explanatory_error": explanatory_error,
