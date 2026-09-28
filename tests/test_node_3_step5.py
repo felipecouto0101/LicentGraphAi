@@ -102,6 +102,97 @@ class TestTransientGroqFailures:
 
 
 class TestExplanationGrounding:
+    def test_rules_require_literal_quote_from_declared_page(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        batch = [{"content": "O custo do licitante ultrapassa o valor da proposta.",
+                  "metadata": {"page": 15, "chunk_id": 7}},
+                 {"content": "Caso seja adotado outro procedimento, muda a etapa.",
+                  "metadata": {"page": 16, "chunk_id": 8}}]
+        row = {"tipo": "selecao", "titulo": "Verificação da exequibilidade",
+               "trecho_id": 1, "citacao": batch[0]["content"], "condicao": ""}
+        result = Node3RequirementAnalyzer._verify_extracted_rules([row], batch)
+        assert result["selecao"][0]["pagina"] == 15
+        assert result["selecao"][0]["citacao"] == batch[0]["content"]
+        with pytest.raises(ValueError, match="Citação"):
+            Node3RequirementAnalyzer._verify_extracted_rules([
+                {**row, "citacao": "O preço da proposta ultrapassa o valor da proposta."}
+            ], batch)
+        with pytest.raises(ValueError, match="Condição"):
+            Node3RequirementAnalyzer._verify_extracted_rules([
+                {**row, "condicao": batch[1]["content"]}
+            ], batch)
+
+    def test_invalid_source_is_retried_before_saving_batch(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        chunk = {"content": "O fornecedor deve manter seu cadastro atualizado.",
+                 "metadata": {"page": 3}}
+        calls = []
+
+        def invoke(messages):
+            import json
+            calls.append(messages)
+            quote = ("Cláusula inventada sem suporte no PDF."
+                     if len(calls) == 1 else chunk["content"])
+            return SimpleNamespace(content=json.dumps({
+                "documentos": [], "documentos_execucao": [], "anexos_referencia": [],
+                "pendencias_documentais": [], "prazos": [], "custos": [],
+                "entregas": [], "eliminacao": [], "riscos": [],
+                "regras": [{"tipo": "participacao", "titulo": "Cadastro atualizado",
+                            "trecho_id": 1, "citacao": quote, "condicao": ""}],
+            }))
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        _, sources = node._extract_verified_batch([chunk], "system")
+        assert len(calls) == 2
+        assert sources["participacao"][0]["pagina"] == 3
+
+    def test_mode_comparison_uses_this_pdf_header_and_preserves_alternative(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        choose = Node3RequirementAnalyzer._mode_applicability
+        assert choose('Caso seja adotado o modo de disputa “fechado e aberto”',
+                      'MODO DE DISPUTA: ABERTO\n') == "nao_aplicavel"
+        assert choose('Caso seja adotado o modo de disputa “aberto”',
+                      'MODO DE DISPUTA: ABERTO\n') == "aplicavel"
+        assert choose('Se houver lances adicionais', 'Documento sem modalidade') is None
+
+    def test_explanation_uses_extracted_clause_and_marks_alternative(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        node = object.__new__(Node3RequirementAnalyzer)
+        condition = 'Caso seja adotado o modo de disputa “fechado e aberto”'
+        quote = condition + ', poderão ser apresentados lances sucessivos.'
+        chunks = [
+            {"content": "MODO DE DISPUTA: ABERTO\n", "metadata": {"page": 1, "chunk_id": 0}},
+            {"content": quote, "metadata": {"page": 2, "chunk_id": 1}},
+        ]
+        agg = {"requisitos_participacao": [], "selecao": ["Lances no modo fechado e aberto"]}
+        source = {"item": agg["selecao"][0], "pagina": 2, "citacao": quote,
+                  "condicao": condition, "chunk_id": 1}
+
+        def invoke(messages):
+            batch = json.loads(messages[-1].content.split("ITENS: ", 1)[1])
+            assert batch[0]["fonte"]["pagina"] == 2
+            return SimpleNamespace(content=json.dumps({"explicacoes": [{
+                "id": 1, "situacao": "aplicavel", "evidencia": {"pagina": 99, "trecho": "falso"},
+                "explicacao": "Nesse modo de disputa os participantes podem oferecer lances sucessivos na etapa prevista.",
+            }]}))
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+        result = node._explain_all_requirements(
+            agg, chunks=chunks, rule_sources={"participacao": [], "selecao": [source]}
+        )["selecao"][0]
+        assert result["situacao"] == "nao_aplicavel"
+        assert result["evidencia"] == {"pagina": 2, "trecho": quote}
+        assert result["condicao"] == condition
+
     def test_pending_item_keeps_candidate_page_without_claiming_evidence(self, monkeypatch):
         import json
         from types import SimpleNamespace
@@ -243,7 +334,9 @@ class TestExplanationGrounding:
         assert '"pagina": 9' not in prompts[0]
         assert "não diga que o edital não lista suas condições" in prompts[0]
 
-    def test_old_checkpoint_keeps_extraction_and_regenerates_explanations(self, tmp_path):
+    def test_old_checkpoint_is_preserved_but_reextracts_missing_sources(self, tmp_path):
+        import hashlib
+        import json
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
 
         node = object.__new__(Node3RequirementAnalyzer)
@@ -252,19 +345,22 @@ class TestExplanationGrounding:
         chunks = [{"content": "Dados cadastrais atualizados", "section": "cadastro",
                    "metadata": {"page": 1}}]
         agg = {"requisitos_participacao": []}
-        old = node._load_checkpoint(chunks, 2, agg)
-        old["next_batch"] = 1
-        old["agg"]["requisitos_participacao"] = ["Dados cadastrais atualizados"]
-        old["explanations"]["participacao"]["1"] = "Texto genérico anterior que precisa ser refeito."
-        old.pop("explanation_version")
-        node._save_checkpoint(old)
+        payload = json.dumps({"version": 1, "model": "modelo-teste",
+                              "chunks": [(chunks[0]["content"], chunks[0]["section"], 1)]},
+                             ensure_ascii=False, sort_keys=True)
+        old_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        old_path = tmp_path / f"{old_sha}.json"
+        old_path.write_text(json.dumps({"version": 1, "next_batch": 1,
+                                        "agg": {"requisitos_participacao": ["Dados cadastrais atualizados"]}}),
+                            encoding="utf-8")
 
         resumed = node._load_checkpoint(chunks, 2, agg)
 
-        assert resumed["next_batch"] == 1
-        assert resumed["agg"]["requisitos_participacao"] == ["Dados cadastrais atualizados"]
+        assert resumed["next_batch"] == 0
+        assert resumed["agg"]["requisitos_participacao"] == []
         assert resumed["explanations"] == {"participacao": {}, "selecao": {}}
-        assert resumed["explanation_version"] == node.EXPLANATION_VERSION
+        assert old_path.exists()
+        assert node._checkpoint_file != old_path
 
 
 class TestNode3IntegrationWithNode2:
@@ -329,7 +425,7 @@ class TestNode3IntegrationWithNode2:
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
 
         analyzer = object.__new__(Node3RequirementAnalyzer)
-        chunk = {"content": "Início " + ("x" * 700) + " SENTINELA_FIM",
+        chunk = {"content": "Registro técnico e menor preço global. Início " + ("x" * 700) + " SENTINELA_FIM",
                  "section": "prazos", "metadata": {"chunk_id": 2, "page": 3}}
         captured = []
         data = {
@@ -341,6 +437,14 @@ class TestNode3IntegrationWithNode2:
             "prazos": ["30 dias"], "custos": [],
             "selecao": ["Menor preço global", "menor preco global!"], "entregas": [],
             "eliminacao": [], "riscos": [], "nivel_risco": "BAIXO",
+            "regras": [
+                {"tipo": "participacao", "titulo": "Registro técnico", "trecho_id": 1,
+                 "citacao": "Registro técnico e menor preço global.", "condicao": ""},
+                {"tipo": "selecao", "titulo": "Menor preço global", "trecho_id": 1,
+                 "citacao": "Registro técnico e menor preço global.", "condicao": ""},
+                {"tipo": "selecao", "titulo": "menor preco global!", "trecho_id": 1,
+                 "citacao": "Registro técnico e menor preço global.", "condicao": ""},
+            ],
         }
         def invoke(messages, *args):
             captured.append(messages[-1].content)
@@ -353,7 +457,7 @@ class TestNode3IntegrationWithNode2:
                                                "requisitos": "Sem requisito.",
                                                "coverage": {}})
         monkeypatch.setattr(analyzer, "_explain_all_requirements",
-                            lambda agg, checkpoint=None, chunks=None: {"participacao": [], "selecao": []})
+                            lambda agg, checkpoint=None, chunks=None, rule_sources=None: {"participacao": [], "selecao": []})
 
         result = analyzer._process_with_rag_llm([chunk])
         assert "SENTINELA_FIM" in captured[0]
@@ -454,6 +558,11 @@ class TestNode3IntegrationWithNode2:
             "requisitos_participacao": ["Condição A", "Condição B"],
             "prazos": [], "custos": [], "selecao": [], "entregas": [],
             "eliminacao": [], "riscos": [], "nivel_risco": "BAIXO",
+            "regras": [
+                {"tipo": "participacao", "titulo": label, "trecho_id": 1,
+                 "citacao": "Atestado exigido na habilitação", "condicao": ""}
+                for label in ("Condição A", "Condição B")
+            ],
         }
         calls = {"scan": 0, "ids": []}
         allow_completion = False
@@ -513,6 +622,7 @@ class TestNode3IntegrationWithNode2:
             "requisitos_participacao": [], "prazos": [], "custos": [],
             "selecao": [], "entregas": [], "eliminacao": [], "riscos": [],
             "nivel_risco": "BAIXO",
+            "regras": [],
         }
         prompts = []
         def invoke(messages, *args):
@@ -530,7 +640,7 @@ class TestNode3IntegrationWithNode2:
             monkeypatch.setattr(node, "_retrieve_rag_chunks",
                                 lambda **kwargs: {"objeto": [chunks[0]]})
             monkeypatch.setattr(node, "_explain_all_requirements",
-                                lambda agg, checkpoint, chunks=None: {"participacao": [], "selecao": []})
+                                lambda agg, checkpoint, chunks=None, rule_sources=None: {"participacao": [], "selecao": []})
             return node
 
         with pytest.raises(RuntimeError, match="lote 2/2"):
