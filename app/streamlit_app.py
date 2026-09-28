@@ -288,6 +288,7 @@ def display_results(result):
     narrative     = analysis.get("explanatory_report") or {}
     narrative_error = analysis.get("explanatory_error")
     rag_sources = analysis.get("rag_sources") or {}
+    unverified_rules = analysis.get("unverified_rules") or []
     checklist_data = result_data.get("checklist") or {}
     resumo        = checklist_data.get("resumo", {})
     checklist     = checklist_data.get("checklist", {})
@@ -326,6 +327,12 @@ def display_results(result):
     # TAB 1 — Resumo executivo
     # ──────────────────────────────────────────────────────────────
     with result_tab1:
+        if unverified_rules:
+            st.warning(
+                f"{len(unverified_rules)} regra(s) candidata(s) ficaram sem citação literal "
+                "confirmada. A análise abaixo inclui somente regras com fonte verificada; "
+                "veja as pendências na aba Análise de Requisitos."
+            )
         if narrative.get("resumo"):
             st.subheader("Visão geral do edital")
             for paragraph in narrative["resumo"].split("\n\n"):
@@ -461,6 +468,20 @@ def display_results(result):
     # TAB 3 — Análise de Requisitos
     # ──────────────────────────────────────────────────────────────
     with result_tab3:
+        if unverified_rules:
+            with st.expander(
+                f"⚠️ Regras candidatas para revisão — {len(unverified_rules)} item(ns)",
+                expanded=True,
+            ):
+                st.caption("Estes tópicos foram propostos pela IA, mas a citação não foi "
+                           "confirmada. Eles não entram nos requisitos verificados.")
+                for item in unverified_rules:
+                    st.markdown(f"**{item.get('titulo_proposto', 'Regra sem título')}**")
+                    st.caption(f"Lote {item.get('lote', '?')} · Página sugerida: "
+                               f"{item.get('pagina_sugerida', 'não localizada')} · "
+                               f"Motivo: {item.get('motivo', 'fonte não verificada')}")
+                    if item.get("citacao_proposta"):
+                        st.write(f"Citação proposta, não confirmada: {item['citacao_proposta']}")
         if narrative.get("requisitos"):
             st.subheader("Explicação dos requisitos")
             for paragraph in narrative["requisitos"].split("\n\n"):
