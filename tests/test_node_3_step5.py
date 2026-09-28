@@ -87,6 +87,36 @@ class TestTransientGroqFailures:
             assert analyzer._invoke_with_rotation(["prompt"]).content == "ok"
         assert waits == [61.0]
 
+    def test_429_reduces_local_rpm_for_later_calls(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class RateLimit(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={"retry-after": "1"})
+
+        clock = [100.0]
+        waits = []
+        calls = []
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        def invoke(_):
+            calls.append(clock[0])
+            if len(calls) == 1:
+                raise RateLimit("429")
+            return SimpleNamespace(content="ok")
+        analyzer.llm = SimpleNamespace(invoke=invoke)
+        monkeypatch.setenv("GROQ_RPM_BUDGET", "10")
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+        def sleep(seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+        monkeypatch.setattr(module.time, "sleep", sleep)
+
+        analyzer._invoke_with_rotation(["prompt"])
+        analyzer._invoke_with_rotation(["next prompt"])
+        assert analyzer._rpm_budget_override == 1
+        assert waits == [2.0, 59.0, 2.0]
+
     def test_minute_limit_reports_real_cause_without_rotating_keys(self, monkeypatch):
         from types import SimpleNamespace
         from app.rag import node_3_analyzer as module
@@ -243,6 +273,24 @@ class TestExplanationGrounding:
             Node3RequirementAnalyzer._verify_extracted_rules([
                 {**row, "condicao": batch[1]["content"]}
             ], batch)
+
+    def test_relocates_literal_quote_to_other_chunk_on_same_page(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        batch = [
+            {"content": "Critério de menor preço global.",
+             "metadata": {"page": 8, "chunk_id": 11}},
+            {"content": "Será permitida nova proposta após a disputa.",
+             "metadata": {"page": 8, "chunk_id": 12}},
+        ]
+        row = {"tipo": "selecao", "titulo": "Nova proposta após disputa",
+               "trecho_id": 1, "citacao": batch[1]["content"], "condicao": ""}
+        result = Node3RequirementAnalyzer._verify_extracted_rules([row], batch)
+        assert result["selecao"][0]["chunk_id"] == 12
+        assert result["selecao"][0]["pagina"] == 8
+        batch[1]["metadata"]["page"] = 9
+        with pytest.raises(ValueError, match="Citação"):
+            Node3RequirementAnalyzer._verify_extracted_rules([row], batch)
 
     def test_invalid_source_is_retried_before_saving_batch(self, monkeypatch):
         from types import SimpleNamespace
