@@ -1312,7 +1312,7 @@ Regras:
             normalized = unicodedata.normalize("NFKD", value.casefold())
             normalized = "".join(c for c in normalized if not unicodedata.combining(c))
             return {word[:6] for word in re.findall(r"[a-z0-9]+", normalized)
-                    if len(word) >= 5 and word not in stop}
+                    if len(word) >= 4 and word not in stop}
 
         other_items = agg.get("requisitos_participacao", []) + agg.get("selecao", [])
         context = {}
@@ -1323,13 +1323,21 @@ Regras:
                  and len(tokens & terms(other)) >= 2),
                 key=lambda other: len(tokens & terms(other)), reverse=True,
             )[:3]
-            ranked = sorted(
-                (chunk for chunk in chunks if chunk.get("content")
-                 and len(tokens & terms(chunk["content"])) >= 2),
-                key=lambda chunk: len(tokens & terms(chunk["content"])), reverse=True,
-            )[:2]
+            scored = sorted(
+                ((len(tokens & terms(chunk["content"])), chunk)
+                 for chunk in chunks if chunk.get("content")),
+                key=lambda pair: pair[0], reverse=True,
+            )
+            ranked = [chunk for score, chunk in scored if score >= 2][:2]
+            # Uma palavra em comum sugere onde procurar, mas não valida citação.
+            candidate_pages = list(dict.fromkeys(
+                chunk.get("metadata", {}).get("page")
+                for score, chunk in scored if score >= 1
+                and chunk.get("metadata", {}).get("page") is not None
+            ))[:2]
             context[str(entry["id"])] = {
                 "itens_relacionados": related,
+                "paginas_candidatas": candidate_pages,
                 "trechos_candidatos": [
                     {"pagina": chunk.get("metadata", {}).get("page"),
                      "texto": chunk["content"][:1100]}
@@ -1406,6 +1414,17 @@ Regras:
                 and stored_for_topic[str(entry["id"])].get("item") == entry["item"]
                 and stored_for_topic[str(entry["id"])].get("explicacao")
             }
+            # Acrescenta páginas de conferência a resultados já salvos, sem nova chamada à LLM.
+            enriched = False
+            for entry in batch:
+                existing = explanations_by_id.get(entry["id"])
+                if existing and existing.get("situacao") == "incerta" and "paginas_para_revisao" not in existing:
+                    existing["paginas_para_revisao"] = self._explanation_context(
+                        [entry], agg, chunks or []
+                    )[str(entry["id"])]["paginas_candidatas"]
+                    enriched = True
+            if enriched and checkpoint is not None:
+                self._save_checkpoint(checkpoint)
             invoked_this_task = False
             for attempt in range(3):
                 missing = [entry for entry in batch if entry["id"] not in explanations_by_id]
@@ -1475,8 +1494,9 @@ Regras:
                                 and isinstance(row.get("explicacao"), str)
                                 and len(row["explicacao"].split()) >= 8):
                             entry = next(item for item in missing if item["id"] == row["id"])
-                            candidates = self._explanation_context([entry], agg, chunks or [])[
-                                str(row["id"])]["trechos_candidatos"]
+                            context = self._explanation_context([entry], agg, chunks or [])[
+                                str(row["id"])]
+                            candidates = context["trechos_candidatos"]
                             evidence = self._valid_explanation_evidence(row, candidates)
                             status = row.get("situacao")
                             if status not in {"aplicavel", "condicional", "incerta"}:
@@ -1506,7 +1526,8 @@ Regras:
                                 )
                                 result = {**entry, "situacao": "incerta", "evidencia": evidence,
                                           "explicacao": preliminary,
-                                          "explicacao_preliminar": True}
+                                          "explicacao_preliminar": True,
+                                          "paginas_para_revisao": context["paginas_candidatas"]}
                             else:
                                 result = {**entry, "situacao": status, "evidencia": evidence,
                                           "explicacao": row["explicacao"].strip()}
