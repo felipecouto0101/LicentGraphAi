@@ -27,12 +27,55 @@ class TestTransientGroqFailures:
 
         analyzer.llm = SimpleNamespace(invoke=invoke)
         monkeypatch.setattr(module.time, "sleep", waits.append)
-        with pytest.raises(RuntimeError, match="limite de requisições por minuto"):
+        with pytest.raises(RuntimeError, match="limite de uso"):
             analyzer._invoke_with_rotation(["message"])
 
         assert len(calls) == 4
         assert waits == [60, 60, 60]
         assert analyzer._current_key_idx == 0
+
+    def test_429_obeys_retry_after_before_retrying(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class RateLimit(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={"retry-after": "95"})
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer.llm = SimpleNamespace(invoke=lambda _: (_ for _ in ()).throw(RateLimit("429")))
+        waits = []
+        monkeypatch.setattr(module.time, "sleep", waits.append)
+
+        with pytest.raises(RuntimeError, match="limite de uso"):
+            analyzer._invoke_with_rotation(["message"])
+        assert waits == [96, 96, 96]
+
+    def test_long_retry_after_reports_wait_without_sending_again(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class RateLimit(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={"retry-after": "7200"})
+
+        calls = []
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        def invoke(_):
+            calls.append(1)
+            raise RateLimit("429")
+        analyzer.llm = SimpleNamespace(invoke=invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: pytest.fail("unexpected wait"))
+
+        with pytest.raises(RuntimeError, match="7201s"):
+            analyzer._invoke_with_rotation(["message"])
+        assert len(calls) == 1
+
+    def test_retry_delay_from_message_keeps_full_duration(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        assert Node3RequirementAnalyzer._rate_limit_wait(
+            Exception("Please try again in 2m30.5s")) == 151.5
 
     def test_503_recovers_without_changing_key(self, monkeypatch):
         from types import SimpleNamespace
