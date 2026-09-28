@@ -127,12 +127,35 @@ class Node3RequirementAnalyzer:
         logger.warning(f"Rotacionando para chave {next_idx + 1}/{len(self._api_keys)}")
         return True
 
+    @staticmethod
+    def _rate_limit_wait(error: Exception) -> float:
+        """Usa o prazo comunicado pela Groq antes de recorrer a uma espera padrão."""
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", None) or {}
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return max(1.0, float(retry_after) + 1.0)
+            except (TypeError, ValueError):
+                pass
+
+        match = re.search(
+            r"try again in\s+(?:(\d+)m)?([\d.]+)s",
+            str(error), re.IGNORECASE,
+        )
+        if match:
+            try:
+                return max(1.0, int(match.group(1) or 0) * 60 + float(match.group(2)) + 1)
+            except ValueError:
+                pass
+        return 60.0
+
     def _invoke_with_rotation(self, messages: list, sleep_between: float = 8.0):
         """
         Rotaciona chaves ao esgotar a cota diária e tenta novamente falhas
         temporárias do serviço, sempre com um número finito de tentativas.
         """
-        minute_limit_failures = 0
+        rate_limit_failures = 0
         transient_failures = 0
         while True:
             try:
@@ -152,25 +175,27 @@ class Node3RequirementAnalyzer:
                                 "Groq: cota diária esgotada nas chaves configuradas; "
                                 "a análise pode ser retomada a partir do checkpoint."
                             ) from e
-                        minute_limit_failures = 0
+                        rate_limit_failures = 0
                         transient_failures = 0
                         continue
                     else:
-                        # Rate limit por minuto — aguarda e tenta a mesma chave.
-                        if minute_limit_failures >= 3:
+                        # O 429 pode indicar limite de tokens ou de requisições.
+                        # Respeita o prazo informado pela API, sem assumir 60s.
+                        if rate_limit_failures >= 3:
                             raise RuntimeError(
-                                "Groq manteve o limite de requisições por minuto (429) "
+                                "Groq manteve o limite de uso (429) "
                                 "após três esperas; retome após a cota ficar disponível. "
                                 "O checkpoint continua salvo."
                             ) from e
-                        import re as _re
-                        wait_match = _re.search(r"try again in (\d+)m([\d.]+)s", err_str)
-                        wait_secs = 60.0
-                        if wait_match:
-                            wait_secs = int(wait_match.group(1)) * 60 + float(wait_match.group(2))
-                            wait_secs = min(wait_secs + 5, 120)  # máx 2 min de espera
-                        logger.warning(f"Rate limit por minuto. Aguardando {wait_secs:.0f}s...")
-                        minute_limit_failures += 1
+                        wait_secs = self._rate_limit_wait(e)
+                        if wait_secs > 300:
+                            raise RuntimeError(
+                                f"Groq pediu uma espera de {wait_secs:.0f}s por limite de uso "
+                                "(429). Retome a análise depois desse prazo; "
+                                "o checkpoint continua salvo."
+                            ) from e
+                        logger.warning("Limite de uso da Groq (429). Aguardando %.0fs...", wait_secs)
+                        rate_limit_failures += 1
                         time.sleep(wait_secs)
                         continue
                 else:
