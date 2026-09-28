@@ -9,6 +9,31 @@ from typing import Dict, List
 
 
 class TestTransientGroqFailures:
+    def test_minute_limit_reports_real_cause_without_rotating_keys(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class MinuteLimit(Exception):
+            status_code = 429
+
+        analyzer = object.__new__(module.Node3RequirementAnalyzer)
+        analyzer._api_keys = ["one", "two", "three"]
+        analyzer._current_key_idx = 0
+        calls, waits = [], []
+
+        def invoke(messages):
+            calls.append(messages)
+            raise MinuteLimit("limit per minute")
+
+        analyzer.llm = SimpleNamespace(invoke=invoke)
+        monkeypatch.setattr(module.time, "sleep", waits.append)
+        with pytest.raises(RuntimeError, match="limite de requisições por minuto"):
+            analyzer._invoke_with_rotation(["message"])
+
+        assert len(calls) == 4
+        assert waits == [60, 60, 60]
+        assert analyzer._current_key_idx == 0
+
     def test_503_recovers_without_changing_key(self, monkeypatch):
         from types import SimpleNamespace
         from app.rag import node_3_analyzer as module
