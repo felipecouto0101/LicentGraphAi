@@ -119,6 +119,7 @@ class TestExplanationGrounding:
                 return SimpleNamespace(content=json.dumps({"explicacoes": [{
                     "id": entries[0]["id"], "situacao": status, "evidencia": evidence,
                     "explicacao": f"O cadastro deve ser antecipado porque sua análise leva até {hours} horas úteis.",
+                    "explicacao_basica": "O cadastro precisa ser feito antes da participação.",
                 }]}))
             return invoke
 
@@ -133,11 +134,36 @@ class TestExplanationGrounding:
         result = node._explain_all_requirements(agg, chunks=[source])
         assert result["participacao"][0]["situacao"] == "incerta"
         assert "24 horas" not in result["participacao"][0]["explicacao"]
+        assert result["participacao"][0]["explicacao"] == "O cadastro precisa ser feito antes da participação."
+        assert result["participacao"][0]["explicacao_preliminar"] is True
 
         monkeypatch.setattr(node, "_invoke_with_rotation", reply(valid, hours=48))
         result = node._explain_all_requirements(agg, chunks=[source])
         assert result["participacao"][0]["situacao"] == "incerta"
         assert "48 horas" not in result["participacao"][0]["explicacao"]
+
+    def test_version_three_retains_verified_explanations_and_refills_only_pending(self, tmp_path):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        node = object.__new__(Node3RequirementAnalyzer)
+        node.checkpoint_directory = tmp_path
+        node.model_name = "modelo-teste"
+        chunks = [{"content": "Regra do cadastro", "metadata": {"page": 1}}]
+        agg = {"requisitos_participacao": [], "selecao": []}
+        saved = node._load_checkpoint(chunks, 1, agg)
+        saved["next_batch"] = 1
+        saved["explanation_version"] = 3
+        saved["explanations"]["participacao"] = {
+            "1": {"item": "Comprovar cadastro", "explicacao": "Cadastro explicado."},
+            "2": {"item": "Documento seguinte",
+                  "explicacao": node.OLD_PENDING_EXPLANATION},
+        }
+        node._save_checkpoint(saved)
+
+        resumed = node._load_checkpoint(chunks, 1, agg)
+        assert resumed["next_batch"] == 1
+        assert list(resumed["explanations"]["participacao"]) == ["1"]
+        assert resumed["explanation_version"] == node.EXPLANATION_VERSION
 
     def test_prompt_uses_relevant_source_and_related_items(self, monkeypatch):
         import json
