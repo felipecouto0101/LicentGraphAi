@@ -126,14 +126,15 @@ class Node3RequirementAnalyzer:
         Rotaciona chaves ao esgotar a cota diária e tenta novamente falhas
         temporárias do serviço, sempre com um número finito de tentativas.
         """
-        keys_tried = 0
+        minute_limit_failures = 0
         transient_failures = 0
-        while keys_tried <= len(self._api_keys):
+        while True:
             try:
                 return self.llm.invoke(messages)
             except Exception as e:
                 err_str = str(e)
-                is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower()
+                is_rate_limit = (getattr(e, "status_code", None) == 429
+                                 or "429" in err_str or "rate_limit" in err_str.lower())
                 is_daily_limit = "tokens per day" in err_str.lower() or "TPD" in err_str
 
                 if is_rate_limit:
@@ -141,10 +142,21 @@ class Node3RequirementAnalyzer:
                         # Limite diário esgotado — tenta próxima chave
                         logger.warning(f"Chave {self._current_key_idx + 1} esgotou limite diário.")
                         if not self._rotate_key():
-                            raise
-                        keys_tried += 1
+                            raise RuntimeError(
+                                "Groq: cota diária esgotada nas chaves configuradas; "
+                                "a análise pode ser retomada a partir do checkpoint."
+                            ) from e
+                        minute_limit_failures = 0
+                        transient_failures = 0
+                        continue
                     else:
-                        # Rate limit por minuto — aguarda e tenta de novo
+                        # Rate limit por minuto — aguarda e tenta a mesma chave.
+                        if minute_limit_failures >= 3:
+                            raise RuntimeError(
+                                "Groq manteve o limite de requisições por minuto (429) "
+                                "após três esperas; retome após a cota ficar disponível. "
+                                "O checkpoint continua salvo."
+                            ) from e
                         import re as _re
                         wait_match = _re.search(r"try again in (\d+)m([\d.]+)s", err_str)
                         wait_secs = 60.0
@@ -152,9 +164,8 @@ class Node3RequirementAnalyzer:
                             wait_secs = int(wait_match.group(1)) * 60 + float(wait_match.group(2))
                             wait_secs = min(wait_secs + 5, 120)  # máx 2 min de espera
                         logger.warning(f"Rate limit por minuto. Aguardando {wait_secs:.0f}s...")
+                        minute_limit_failures += 1
                         time.sleep(wait_secs)
-                        # Tenta a mesma chave de novo
-                        keys_tried += 1
                         continue
                 else:
                     status = getattr(e, "status_code", None)
@@ -177,7 +188,6 @@ class Node3RequirementAnalyzer:
                         time.sleep(delay)
                         continue
                     raise
-        raise RuntimeError("Todas as chaves API falharam.")
 
     def analyze_chunk(self, chunk: dict, system_prompt: str | None = None) -> dict:
         """
