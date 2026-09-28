@@ -1217,22 +1217,32 @@ Regras:
         fields = ("documentos", "documentos_execucao", "anexos_referencia",
                   "pendencias_documentais", "prazos", "custos", "entregas",
                   "eliminacao", "riscos")
+        prompt = self._build_unified_prompt(batch, preceding)
+        correction = ""
         for attempt in range(3):
             response = self._invoke_with_rotation([
-                system_msg, HumanMessage(content=self._build_unified_prompt(batch, preceding))
+                system_msg, HumanMessage(content=prompt + correction)
             ])
-            parsed = self._parse_llm_json(response.content)
             try:
+                parsed = self._parse_llm_json(response.content)
                 if any(not isinstance(parsed.get(field), list) or
                        any(not isinstance(item, str) for item in parsed[field])
                        for field in fields):
                     raise ValueError("JSON de extração incompleto ou inválido")
                 return parsed, self._verify_extracted_rules(parsed.get("regras"), batch, preceding)
-            except ValueError:
+            except (ValueError, json.JSONDecodeError) as error:
                 if attempt == 2:
                     raise
-                logger.warning("Fonte ou JSON inválido no lote; repetindo resposta (%s/3)",
-                               attempt + 2)
+                logger.warning("Fonte ou JSON inválido no lote (%s); repetindo resposta (%s/3)",
+                               error, attempt + 2)
+                correction = (
+                    "\n\nA resposta anterior foi recusada: " + str(error) + ". "
+                    "Refaça o JSON completo. Para cada regra, copie citacao e condicao "
+                    "literalmente dos trechos fornecidos, na mesma página do trecho_id. "
+                    "Se a condição não estiver nesses trechos, omita a regra dependente "
+                    "dela. Não transforme regra condicional em incondicional. "
+                    "Não altere nem invente números de página."
+                )
                 time.sleep(8)
         raise RuntimeError("Lote sem fonte verificável")
 
@@ -1818,7 +1828,7 @@ Regras:
                 )
             try:
                 previous = []
-                for older in reversed(chunks[max(0, b_idx * BATCH_SIZE - 2):b_idx * BATCH_SIZE]):
+                for older in reversed(chunks[:b_idx * BATCH_SIZE]):
                     if older.get("metadata", {}).get("page") != batch[0].get("metadata", {}).get("page"):
                         break
                     previous.insert(0, older)
