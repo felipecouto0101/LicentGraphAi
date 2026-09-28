@@ -200,8 +200,10 @@ class TestExplanationGrounding:
         from app.rag import node_3_analyzer as module
 
         node = object.__new__(module.Node3RequirementAnalyzer)
-        chunk = {"content": "Caso seja adotada outra modalidade, será permitida nova proposta.",
+        chunk = {"content": "Neste procedimento, será permitida nova proposta.",
                  "metadata": {"page": 3}}
+        parent = {"content": "Caso seja adotada outra modalidade.",
+                  "metadata": {"page": 3}}
         requests = []
 
         def invoke(messages):
@@ -218,10 +220,22 @@ class TestExplanationGrounding:
 
         monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
         monkeypatch.setattr(module.time, "sleep", lambda _: None)
-        _, sources = node._extract_verified_batch([chunk], "system")
+        _, sources = node._extract_verified_batch([chunk], "system", [parent])
         assert len(requests) == 2
         assert "Condição da regra não aparece" in requests[1]
-        assert sources["selecao"][0]["condicao"] == "Caso seja adotada outra modalidade"
+        assert sources["selecao"][0]["condicao"] == parent["content"].rstrip(".")
+
+    def test_literal_conditional_quote_repairs_paraphrased_condition(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        quote = "Caso seja adotada outra modalidade, será permitida nova proposta."
+        row = {"tipo": "selecao", "titulo": "Nova proposta em modalidade alternativa",
+               "trecho_id": 1, "citacao": quote,
+               "condicao": "Se escolherem uma modalidade diferente"}
+        result = Node3RequirementAnalyzer._verify_extracted_rules(
+            [row], [{"content": quote, "metadata": {"page": 3}}]
+        )
+        assert result["selecao"][0]["condicao"] == quote
 
     def test_condition_can_come_from_previous_chunk_on_same_page(self):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
