@@ -1076,7 +1076,7 @@ Regras:
         return results_by_query
 
 
-    def _build_unified_prompt(self, chunks: list[dict]) -> str:
+    def _build_unified_prompt(self, chunks: list[dict], preceding: list[dict] | None = None) -> str:
         """
         Prompt unificado: extrai TODAS as informacoes relevantes de um batch
         em uma unica chamada ao LLM.
@@ -1086,12 +1086,19 @@ Regras:
             for i, c in enumerate(chunks)
             if c.get("content", "").strip()
         )
+        parent_context = "\n".join(
+            f"[Contexto anterior, página {c.get('metadata', {}).get('page', 'não informada')}]\n"
+            f"{c['content'][-900:]}" for c in (preceding or []) if c.get("content")
+        )
         return f"""Especialista em licitacoes publicas brasileiras (Lei 14.133/2021).
 
 Analise os trechos abaixo e extraia TODAS as informacoes encontradas.
 
 TRECHOS:
 {context}
+
+CONTEXTO ANTERIOR (apenas para verificar condições; não extraia novas regras daqui):
+{parent_context}
 
 Responda SOMENTE com JSON valido (sem markdown):
 {{
@@ -1126,7 +1133,8 @@ Regras:
   considerar o início da cláusula; quando faltar contexto, não crie a regra.
 - Se a regra depender de "caso", "se", "quando", "desde que" ou de uma
   modalidade alternativa, copie a condição literal em condicao. A condição
-  deve existir em algum trecho desta mesma página no lote. Não a trate como
+  deve existir em algum trecho desta mesma página no lote ou no contexto
+  anterior. Não a trate como
   aplicável apenas porque está descrita no documento.
 - Nao repita um mesmo fato com palavras diferentes no mesmo campo.
 - Se trechos parecerem contraditorios, preserve as formulacoes sem escolher uma como correta.
@@ -1135,7 +1143,8 @@ Regras:
 """
 
     @staticmethod
-    def _verify_extracted_rules(rows: list, batch: list[dict]) -> dict[str, list[dict]]:
+    def _verify_extracted_rules(rows: list, batch: list[dict],
+                                preceding: list[dict] | None = None) -> dict[str, list[dict]]:
         """Liga cada regra à página e a texto literal do chunk informado."""
         if not isinstance(rows, list):
             raise ValueError("Regras sem fontes: lista 'regras' ausente")
@@ -1162,7 +1171,7 @@ Regras:
             if condition and not any(
                 c.get("metadata", {}).get("page") == page
                 and literal(condition) in literal(c.get("content", ""))
-                for c in batch
+                for c in batch + (preceding or [])
             ):
                 raise ValueError("Condição da regra não aparece na página informada")
             if not condition and re.search(
@@ -1177,14 +1186,15 @@ Regras:
             })
         return sources
 
-    def _extract_verified_batch(self, batch: list[dict], system_msg) -> tuple[dict, dict]:
+    def _extract_verified_batch(self, batch: list[dict], system_msg,
+                                preceding: list[dict] | None = None) -> tuple[dict, dict]:
         """Repete somente respostas malformadas ou com fonte não comprovada."""
         fields = ("documentos", "documentos_execucao", "anexos_referencia",
                   "pendencias_documentais", "prazos", "custos", "entregas",
                   "eliminacao", "riscos")
         for attempt in range(3):
             response = self._invoke_with_rotation([
-                system_msg, HumanMessage(content=self._build_unified_prompt(batch))
+                system_msg, HumanMessage(content=self._build_unified_prompt(batch, preceding))
             ])
             parsed = self._parse_llm_json(response.content)
             try:
@@ -1192,7 +1202,7 @@ Regras:
                        any(not isinstance(item, str) for item in parsed[field])
                        for field in fields):
                     raise ValueError("JSON de extração incompleto ou inválido")
-                return parsed, self._verify_extracted_rules(parsed.get("regras"), batch)
+                return parsed, self._verify_extracted_rules(parsed.get("regras"), batch, preceding)
             except ValueError:
                 if attempt == 2:
                     raise
@@ -1782,7 +1792,14 @@ Regras:
                     itens_encontrados=total_itens,
                 )
             try:
-                parsed, extracted_rules = self._extract_verified_batch(batch, system_msg)
+                previous = []
+                for older in reversed(chunks[max(0, b_idx * BATCH_SIZE - 2):b_idx * BATCH_SIZE]):
+                    if older.get("metadata", {}).get("page") != batch[0].get("metadata", {}).get("page"):
+                        break
+                    previous.insert(0, older)
+                parsed, extracted_rules = self._extract_verified_batch(
+                    batch, system_msg, previous
+                )
 
                 if not agg["objeto"] and parsed.get("objeto"):
                     agg["objeto"] = parsed["objeto"]
