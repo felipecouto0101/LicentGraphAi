@@ -507,6 +507,13 @@ def display_results(result):
                             page = evidence.get("pagina")
                             label = f"Página {page}" if page is not None else "Página não informada"
                             st.caption(f"Trecho relacionado — {label}: {evidence.get('trecho', '')}")
+                        elif status == "incerta":
+                            pages = detail.get("paginas_para_revisao") or []
+                            if pages:
+                                labels = ", ".join(str(page) for page in pages)
+                                st.caption(f"Páginas sugeridas para revisão: {labels}. Busca por palavras; a cláusula não foi confirmada.")
+                            else:
+                                st.caption("Página não localizada automaticamente para este tópico.")
 
             # Condições de participação e habilitação (não são etapas da disputa).
             participation_items = all_tech if selection_items is not None or not llm_analysis else []
