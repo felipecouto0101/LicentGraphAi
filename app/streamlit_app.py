@@ -496,9 +496,11 @@ def display_results(result):
                         detail = explained[i - 1]
                         status = detail.get("situacao")
                         if status == "incerta":
-                            st.warning("Interpretação pendente: o trecho selecionado não sustenta uma conclusão segura.")
+                            st.warning("Interpretação pendente: a explicação abaixo é preliminar e a aplicação da regra não foi confirmada.")
                         elif status == "condicional":
                             st.info("Regra condicional: depende da situação descrita na cláusula.")
+                        if detail.get("explicacao_preliminar"):
+                            st.caption("Entendendo o tópico (leitura preliminar)")
                         st.write(detail["explicacao"])
                         evidence = detail.get("evidencia")
                         if evidence:
