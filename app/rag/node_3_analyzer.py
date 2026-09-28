@@ -6,9 +6,10 @@ import unicodedata
 import hashlib
 import json
 import tempfile
+from collections import deque
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 logging.basicConfig(level=logging.INFO)
@@ -111,6 +112,7 @@ class Node3RequirementAnalyzer:
             api_key=api_key,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            max_retries=0,  # O nó controla esperas e tentativas usando os cabeçalhos.
         )
 
     def _rotate_key(self) -> bool:
@@ -150,6 +152,121 @@ class Node3RequirementAnalyzer:
                 pass
         return 60.0
 
+    @staticmethod
+    def _reset_seconds(value: str | None) -> float | None:
+        if not value:
+            return None
+        match = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", value.strip())
+        if match:
+            return (int(match.group(1) or 0) * 3600
+                    + int(match.group(2) or 0) * 60 + float(match.group(3)))
+        return None
+
+    def _record_quota(self, headers) -> None:
+        """Guarda cotas reais retornadas pela API, sem registrar credenciais."""
+        if not headers:
+            return
+        quota = getattr(self, "_quota", None)
+        if quota is None:
+            quota = self._quota = {}
+        now = time.monotonic()
+        for kind in ("tokens", "requests"):
+            remaining = headers.get(f"x-ratelimit-remaining-{kind}")
+            limit = headers.get(f"x-ratelimit-limit-{kind}")
+            reset = self._reset_seconds(headers.get(f"x-ratelimit-reset-{kind}"))
+            for name, value in (("remaining", remaining), ("limit", limit)):
+                try:
+                    if value is not None:
+                        quota[f"{kind}_{name}"] = max(0, int(value))
+                except (TypeError, ValueError):
+                    pass
+            if reset is not None:
+                quota[f"{kind}_reset_at"] = now + reset
+        if "tokens_remaining" in quota or "requests_remaining" in quota:
+            logger.info("Cota Groq: tokens/min restantes=%s; requisições/dia restantes=%s",
+                        quota.get("tokens_remaining", "?"),
+                        quota.get("requests_remaining", "?"))
+
+    def _before_groq_request(self, messages: list) -> None:
+        """Espera pela janela de tokens e limita as chamadas por minuto."""
+        quota = getattr(self, "_quota", None)
+        if quota is None:
+            quota = self._quota = {}
+        calls = getattr(self, "_request_times", None)
+        if calls is None:
+            calls = self._request_times = deque()
+
+        # O header de requests representa RPD, não RPM. Um teto local
+        # conservador cobre RPM até o primeiro 429, sem supor a cota da conta.
+        rpm = max(1, int(os.getenv("GROQ_RPM_BUDGET", "10")))
+        now = time.monotonic()
+        while calls and now - calls[0] >= 60:
+            calls.popleft()
+        if len(calls) >= rpm:
+            wait = max(0.0, 61 - (now - calls[0]))
+            logger.info("Limite local de requisições: aguardando %.0fs", wait)
+            time.sleep(wait)
+            now = time.monotonic()
+            while calls and now - calls[0] >= 60:
+                calls.popleft()
+
+        if quota.get("requests_remaining") == 0:
+            reset_at = quota.get("requests_reset_at")
+            if reset_at and now >= reset_at:
+                quota.pop("requests_remaining", None)
+            else:
+                wait = max(0.0, reset_at - now) if reset_at else None
+                raise RuntimeError(
+                    "Groq: cota de requisições por dia esgotada"
+                    + (f"; tente novamente em {wait:.0f}s" if wait else "")
+                    + ". O checkpoint continua salvo."
+                )
+
+        # Estimativa conservadora: não é a tokenização exata do modelo.
+        # Reserva também espaço para a resposta configurada.
+        estimated = sum((len(str(getattr(m, "content", m))) + 2) // 3 + 8
+                        for m in messages)
+        estimated += getattr(self, "max_tokens", 2500)
+        limit = quota.get("tokens_limit")
+        if limit and estimated > limit:
+            raise RuntimeError(
+                f"A chamada pode exigir cerca de {estimated} tokens, acima da cota "
+                f"de {limit} tokens/min informada pela Groq. Reduza o lote ou use "
+                "um limite maior; o checkpoint continua salvo."
+            )
+        remaining = quota.get("tokens_remaining")
+        reset_at = quota.get("tokens_reset_at")
+        if remaining is not None and remaining < estimated and reset_at:
+            wait = max(0.0, reset_at - now) + 1
+            if wait > 300:
+                raise RuntimeError(
+                    f"Groq: aguarde {wait:.0f}s pela renovação da cota de tokens; "
+                    "o checkpoint continua salvo."
+                )
+            logger.info("Cota de tokens insuficiente (%s < ~%s); aguardando %.0fs",
+                        remaining, estimated, wait)
+            time.sleep(wait)
+            quota["tokens_remaining"] = quota.get("tokens_limit", estimated)
+        calls.append(time.monotonic())
+
+    def _invoke_groq(self, messages: list):
+        """Lê os headers sem fazer uma segunda chamada só para consultar cotas."""
+        client = getattr(self.llm, "client", None)
+        raw_client = getattr(client, "with_raw_response", None)
+        if raw_client is None:  # Permite clientes substitutos em testes.
+            return self.llm.invoke(messages)
+        groq_messages = [
+            {"role": "system" if isinstance(m, SystemMessage) else "user",
+             "content": m.content} for m in messages
+        ]
+        raw = raw_client.create(
+            model=self.model_name, messages=groq_messages,
+            temperature=self.temperature, max_tokens=self.max_tokens,
+        )
+        self._record_quota(raw.headers)
+        completion = raw.parse()
+        return AIMessage(content=completion.choices[0].message.content or "")
+
     def _invoke_with_rotation(self, messages: list, sleep_between: float = 8.0):
         """
         Rotaciona chaves ao esgotar a cota diária e tenta novamente falhas
@@ -159,8 +276,10 @@ class Node3RequirementAnalyzer:
         transient_failures = 0
         while True:
             try:
-                return self.llm.invoke(messages)
+                self._before_groq_request(messages)
+                return self._invoke_groq(messages)
             except Exception as e:
+                self._record_quota(getattr(getattr(e, "response", None), "headers", None))
                 err_str = str(e)
                 is_rate_limit = (getattr(e, "status_code", None) == 429
                                  or "429" in err_str or "rate_limit" in err_str.lower())
@@ -258,7 +377,7 @@ class Node3RequirementAnalyzer:
         else:
             messages = [HumanMessage(content=prompt)]
 
-        response = self.llm.invoke(messages)
+        response = self._invoke_with_rotation(messages)
 
         return {
             "requirements": self._extract_requirements_from_response(response.content),
