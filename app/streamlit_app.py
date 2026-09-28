@@ -497,8 +497,12 @@ def display_results(result):
                         status = detail.get("situacao")
                         if status == "incerta":
                             st.warning("Interpretação pendente: a explicação abaixo é preliminar e a aplicação da regra não foi confirmada.")
+                        elif status == "nao_aplicavel":
+                            st.info("Regra alternativa: a condição descrita não corresponde ao modo de disputa indicado no início deste PDF.")
                         elif status == "condicional":
                             st.info("Regra condicional: depende da situação descrita na cláusula.")
+                        if detail.get("condicao"):
+                            st.caption(f"Condição no PDF: {detail['condicao']}")
                         if detail.get("explicacao_preliminar"):
                             st.caption("Entendendo o tópico (leitura preliminar)")
                         st.write(detail["explicacao"])
