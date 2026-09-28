@@ -1365,12 +1365,16 @@ Regras:
 
     def _extract_verified_batch(self, batch: list[dict], system_msg,
                                 preceding: list[dict] | None = None) -> tuple[dict, dict]:
-        """Repete somente respostas malformadas ou com fonte não comprovada."""
+        """Preserva regras comprovadas e separa candidatas sem citação verificável."""
         fields = ("documentos", "documentos_execucao", "anexos_referencia",
                   "pendencias_documentais", "prazos", "custos", "entregas",
                   "eliminacao", "riscos")
         prompt = self._build_unified_prompt(batch, preceding)
         correction = ""
+        verified = {"participacao": [], "selecao": []}
+        pending = {}
+        last_parsed = None
+        last_error = None
         for attempt in range(3):
             response = self._invoke_with_rotation([
                 system_msg, HumanMessage(content=prompt + correction)
@@ -1381,14 +1385,49 @@ Regras:
                        any(not isinstance(item, str) for item in parsed[field])
                        for field in fields):
                     raise ValueError("JSON de extração incompleto ou inválido")
-                return parsed, self._verify_extracted_rules(parsed.get("regras"), batch, preceding)
+                rows = parsed.get("regras")
+                if not isinstance(rows, list):
+                    raise ValueError("Regras sem fontes: lista 'regras' ausente")
+                last_parsed = parsed
+                errors = []
+                for row in rows:
+                    try:
+                        checked = self._verify_extracted_rules([row], batch, preceding)
+                        for topic, items in checked.items():
+                            for item in items:
+                                if item not in verified[topic]:
+                                    verified[topic].append(item)
+                                pending.pop((topic, item["item"].casefold()), None)
+                    except ValueError as error:
+                        title = row.get("titulo") if isinstance(row, dict) else None
+                        topic = row.get("tipo") if isinstance(row, dict) else None
+                        chunk_index = row.get("trecho_id") if isinstance(row, dict) else None
+                        page = (batch[chunk_index - 1].get("metadata", {}).get("page")
+                                if type(chunk_index) is int and 1 <= chunk_index <= len(batch)
+                                else None)
+                        candidate = {
+                            "titulo_proposto": title if isinstance(title, str) else "Regra sem título",
+                            "tipo_proposto": topic if topic in verified else "indefinido",
+                            "pagina_sugerida": page,
+                            "citacao_proposta": (row.get("citacao", "")[:750]
+                                                  if isinstance(row, dict)
+                                                  and isinstance(row.get("citacao"), str) else ""),
+                            "motivo": str(error),
+                        }
+                        pending[(candidate["tipo_proposto"],
+                                 candidate["titulo_proposto"].casefold())] = candidate
+                        errors.append(str(error))
+                if not errors and not pending:
+                    return parsed, verified
+                last_error = ValueError(errors[0] if errors else
+                                        "Regra de tentativa anterior continua sem fonte")
             except (ValueError, json.JSONDecodeError) as error:
-                if attempt == 2:
-                    raise
+                last_error = error
+            if attempt < 2:
                 logger.warning("Fonte ou JSON inválido no lote (%s); repetindo resposta (%s/3)",
-                               error, attempt + 2)
+                               last_error, attempt + 2)
                 correction = (
-                    "\n\nA resposta anterior foi recusada: " + str(error) + ". "
+                    "\n\nA resposta anterior foi recusada: " + str(last_error) + ". "
                     "Refaça o JSON completo. Para cada regra, copie citacao e condicao "
                     "literalmente dos trechos fornecidos, na mesma página do trecho_id. "
                     "Se a condição não estiver nesses trechos, omita a regra dependente "
@@ -1396,7 +1435,13 @@ Regras:
                     "Não altere nem invente números de página."
                 )
                 time.sleep(8)
-        raise RuntimeError("Lote sem fonte verificável")
+        if last_parsed is not None:
+            last_parsed["_unverified_rules"] = list(pending.values())
+            if pending:
+                logger.warning("Lote com %s regra(s) sem fonte literal; revisão sinalizada no relatório",
+                               len(pending))
+            return last_parsed, verified
+        raise last_error or RuntimeError("Lote sem JSON válido")
 
     @staticmethod
     def _report_context(agg: dict, limit_per_topic: int = 12) -> tuple[str, dict]:
@@ -1513,6 +1558,7 @@ Regras:
             "version": self.CHECKPOINT_VERSION, "fingerprint": fingerprint,
             "next_batch": 0, "agg": empty_agg, "max_risk": "BAIXO",
             "rule_sources": {"participacao": [], "selecao": []},
+            "unverified_rules": [],
             "explanation_version": self.EXPLANATION_VERSION,
             "explanations": {"participacao": {}, "selecao": {}},
         }
@@ -1543,6 +1589,7 @@ Regras:
                            for key, value in empty_agg.items())
                     or saved.get("max_risk") not in {"ALTO", "MEDIO", "BAIXO"}
                     or not isinstance(saved.get("rule_sources"), dict)
+                    or not isinstance(saved.get("unverified_rules", []), list)
                     or any(not isinstance(saved["rule_sources"].get(topic), list)
                            for topic in ("participacao", "selecao"))
                     or len(saved["rule_sources"]["participacao"]) != len(saved["agg"].get("requisitos_participacao", []))
@@ -1551,6 +1598,7 @@ Regras:
                 raise ValueError("checkpoint incompatível")
             logger.info("Retomando análise: %s/%s lotes de extração já concluídos",
                         saved["next_batch"], total_batches)
+            saved.setdefault("unverified_rules", [])
             if saved.get("explanation_version") != self.EXPLANATION_VERSION:
                 if saved.get("explanation_version") == 3:
                     logger.info("Refazendo apenas explicações pendentes; mantendo as confirmadas e a extração")
@@ -1987,6 +2035,8 @@ Regras:
                 parsed, extracted_rules = self._extract_verified_batch(
                     batch, system_msg, previous
                 )
+                for candidate in parsed.get("_unverified_rules", []):
+                    checkpoint["unverified_rules"].append({**candidate, "lote": b_idx + 1})
 
                 if not agg["objeto"] and parsed.get("objeto"):
                     agg["objeto"] = parsed["objeto"]
@@ -2209,6 +2259,7 @@ Regras:
             "pendencias_documentais": agg["pendencias_documentais"],
             "detailed_explanations": detailed_explanations,
             "rule_sources": checkpoint["rule_sources"],
+            "unverified_rules": checkpoint["unverified_rules"],
             "rag_sources": source_refs,
             "explanatory_report": explanatory_report,
             "explanatory_error": explanatory_error,
