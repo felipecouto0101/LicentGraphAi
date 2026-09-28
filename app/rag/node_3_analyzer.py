@@ -1193,16 +1193,23 @@ Regras:
             page = source_chunk.get("metadata", {}).get("page")
             if page is None or literal(quote) not in literal(source_chunk.get("content", "")):
                 raise ValueError("Citação da regra não aparece no trecho e página informados")
-            if condition and not any(
+            condition_supported = not condition or any(
                 c.get("metadata", {}).get("page") == page
                 and literal(condition) in literal(c.get("content", ""))
                 for c in batch + (preceding or [])
-            ):
-                raise ValueError("Condição da regra não aparece na página informada")
-            if not condition and re.search(
+            )
+            # A citação já comprovada pode ser a condição literal. Isso evita
+            # rejeitar a regra apenas porque o modelo parafraseou esse campo.
+            conditional_quote = re.search(
                 r"(?i)(?:^|[.;]\s*)\s*(?:\d+(?:\.\d+)*\.?\s*)?"
                 r"(?:caso|quando|desde que|na hipótese de)\b", quote.strip()
-            ):
+            )
+            if condition and not condition_supported and conditional_quote:
+                condition = quote
+                condition_supported = True
+            if not condition_supported:
+                raise ValueError("Condição da regra não aparece na página informada")
+            if not condition and conditional_quote:
                 condition = quote
             sources[row["tipo"]].append({
                 "item": title.strip(), "pagina": page, "citacao": quote.strip(),
