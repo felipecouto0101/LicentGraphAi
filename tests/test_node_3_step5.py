@@ -194,6 +194,35 @@ class TestExplanationGrounding:
         assert len(calls) == 2
         assert sources["participacao"][0]["pagina"] == 3
 
+    def test_invalid_condition_gets_specific_feedback_on_retry(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        chunk = {"content": "Caso seja adotada outra modalidade, será permitida nova proposta.",
+                 "metadata": {"page": 3}}
+        requests = []
+
+        def invoke(messages):
+            requests.append(messages[-1].content)
+            return SimpleNamespace(content=json.dumps({
+                "documentos": [], "documentos_execucao": [], "anexos_referencia": [],
+                "pendencias_documentais": [], "prazos": [], "custos": [],
+                "entregas": [], "eliminacao": [], "riscos": [],
+                "regras": [{"tipo": "selecao", "titulo": "Nova proposta na outra modalidade",
+                            "trecho_id": 1, "citacao": chunk["content"],
+                            "condicao": ("Modalidade inventada" if len(requests) == 1
+                                         else "Caso seja adotada outra modalidade") }],
+            }))
+
+        monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        _, sources = node._extract_verified_batch([chunk], "system")
+        assert len(requests) == 2
+        assert "Condição da regra não aparece" in requests[1]
+        assert sources["selecao"][0]["condicao"] == "Caso seja adotada outra modalidade"
+
     def test_condition_can_come_from_previous_chunk_on_same_page(self):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
 
