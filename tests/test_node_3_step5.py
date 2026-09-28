@@ -151,6 +151,24 @@ class TestExplanationGrounding:
         assert len(calls) == 2
         assert sources["participacao"][0]["pagina"] == 3
 
+    def test_condition_can_come_from_previous_chunk_on_same_page(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        parent = {"content": "Caso seja adotado o modo de disputa “aberto e fechado”",
+                  "metadata": {"page": 11}}
+        child = {"content": "Neste procedimento, poderá manter o lance ou ofertar outro.",
+                 "metadata": {"page": 11}}
+        row = {"tipo": "selecao", "titulo": "Opção de lance na etapa alternativa",
+               "trecho_id": 1, "citacao": child["content"],
+               "condicao": parent["content"]}
+        result = Node3RequirementAnalyzer._verify_extracted_rules(
+            [row], [child], [parent]
+        )
+        assert result["selecao"][0]["condicao"] == parent["content"]
+        parent["metadata"]["page"] = 10
+        with pytest.raises(ValueError, match="Condição"):
+            Node3RequirementAnalyzer._verify_extracted_rules([row], [child], [parent])
+
     def test_mode_comparison_uses_this_pdf_header_and_preserves_alternative(self):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
 
