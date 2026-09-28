@@ -320,6 +320,69 @@ class TestExplanationGrounding:
         assert len(calls) == 2
         assert sources["participacao"][0]["pagina"] == 3
 
+    def test_persistent_invalid_quote_is_flagged_without_losing_verified_rule(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        chunk = {"content": "O cadastro deverá permanecer atualizado durante a disputa.",
+                 "metadata": {"page": 3, "chunk_id": 9}}
+        calls = []
+        def invoke(_):
+            calls.append(1)
+            return SimpleNamespace(content=json.dumps({
+                "documentos": [], "documentos_execucao": [], "anexos_referencia": [],
+                "pendencias_documentais": [], "prazos": [], "custos": [],
+                "entregas": [], "eliminacao": [], "riscos": [],
+                "regras": [
+                    {"tipo": "participacao", "titulo": "Cadastro atualizado durante a disputa",
+                     "trecho_id": 1, "citacao": chunk["content"], "condicao": ""},
+                    {"tipo": "selecao", "titulo": "Outra etapa inventada",
+                     "trecho_id": 1, "citacao": "Será exigida uma etapa inexistente.",
+                     "condicao": ""},
+                ],
+            }))
+        monkeypatch.setattr(node, "_invoke_with_rotation", invoke)
+        monkeypatch.setattr(module.time, "sleep", lambda _: None)
+        parsed, sources = node._extract_verified_batch([chunk], "system")
+        assert len(calls) == 3
+        assert len(sources["participacao"]) == 1
+        assert sources["selecao"] == []
+        assert parsed["_unverified_rules"][0]["titulo_proposto"] == "Outra etapa inventada"
+        assert parsed["_unverified_rules"][0]["pagina_sugerida"] == 3
+
+    def test_pending_rule_is_saved_and_visible_after_resume(self, monkeypatch, tmp_path):
+        from app.rag import node_3_analyzer as module
+
+        chunk = {"content": "O cadastro deverá permanecer atualizado durante a disputa.",
+                 "metadata": {"page": 3, "chunk_id": 9}}
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node.model_name = "qwen/qwen3.8-27b"
+        node.checkpoint_directory = tmp_path
+        calls = []
+        def extract(*args):
+            calls.append(1)
+            return ({
+                "objeto": "", "documentos": [], "documentos_execucao": [],
+                "anexos_referencia": [], "pendencias_documentais": [],
+                "prazos": [], "custos": [], "entregas": [], "eliminacao": [],
+                "riscos": [], "nivel_risco": "BAIXO",
+                "_unverified_rules": [{"titulo_proposto": "Etapa incerta",
+                                       "pagina_sugerida": 3, "motivo": "Citação ausente"}],
+            }, {"participacao": [], "selecao": []})
+        monkeypatch.setattr(node, "_extract_verified_batch", extract)
+        monkeypatch.setattr(node, "_retrieve_rag_chunks", lambda **kwargs: {"prazos": [chunk]})
+        monkeypatch.setattr(node, "_explain_all_requirements", lambda *args: {
+            "participacao": [], "selecao": []})
+        first = node._process_with_rag_llm([chunk])
+        assert first["unverified_rules"][0]["lote"] == 1
+        assert first["selection_process"] == []
+        assert node._checkpoint_file.exists()
+        second = node._process_with_rag_llm([chunk])
+        assert len(calls) == 1
+        assert second["unverified_rules"] == first["unverified_rules"]
+
     def test_invalid_condition_gets_specific_feedback_on_retry(self, monkeypatch):
         import json
         from types import SimpleNamespace
