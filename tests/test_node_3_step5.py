@@ -9,6 +9,49 @@ from typing import Dict, List
 
 
 class TestTransientGroqFailures:
+    def test_oversized_token_request_is_not_retried_unchanged(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class TooLarge(Exception):
+            status_code = 429
+            body = {"error": {"type": "tokens", "code": "rate_limit_exceeded",
+                              "message": "Tokens per minute: Limit 8000, Used 0, Requested 9120"}}
+            response = SimpleNamespace(headers={"x-ratelimit-limit-tokens": "8000",
+                                                "x-ratelimit-remaining-tokens": "8000"})
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node.llm = SimpleNamespace(invoke=lambda _: (_ for _ in ()).throw(TooLarge("429")))
+        monkeypatch.setattr(module.time, "sleep", lambda _: pytest.fail("should resize, not wait"))
+        with pytest.raises(module.GroqRequestTooLarge):
+            node._invoke_with_rotation(["prompt"])
+
+    def test_split_batch_resumes_saved_parts_without_losing_chunks(self, monkeypatch, tmp_path):
+        import json
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node._checkpoint_file = tmp_path / "split.json"
+        chunks = [{"content": f"Trecho {i}", "metadata": {"page": 3, "chunk_id": i}}
+                  for i in range(4)]
+        calls = []
+        def extract(batch, *args):
+            ids = [chunk["metadata"]["chunk_id"] for chunk in batch]
+            calls.append(ids)
+            if len(batch) > 2:
+                raise module.GroqRequestTooLarge("large")
+            if ids == [2, 3] and calls.count(ids) == 1:
+                raise RuntimeError("503")
+            return ({"documentos": [f"D{i}" for i in ids], "objeto": "Objeto",
+                     "nivel_risco": "BAIXO"}, {"participacao": [], "selecao": []})
+        monkeypatch.setattr(node, "_extract_verified_batch", extract)
+        state = {}
+        with pytest.raises(RuntimeError, match="503"):
+            node._extract_budgeted_batch(chunks, "system", [], state, 6)
+        restored = json.loads(node._checkpoint_file.read_text(encoding="utf-8"))
+        result, _ = node._extract_budgeted_batch(chunks, "system", [], restored, 6)
+        assert calls == [[0, 1, 2, 3], [0, 1], [2, 3], [2, 3]]
+        assert result["documentos"] == ["D0", "D1", "D2", "D3"]
+
     def test_raw_response_tracks_remaining_quota_without_extra_call(self):
         from types import SimpleNamespace
         from app.rag import node_3_analyzer as module
