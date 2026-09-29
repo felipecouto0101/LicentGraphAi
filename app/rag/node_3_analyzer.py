@@ -23,6 +23,10 @@ class GroqRequestTooLarge(RuntimeError):
     """O pedido precisa ser reduzido; esperar não altera seu tamanho."""
 
 
+class GroqOutputTruncated(GroqRequestTooLarge):
+    """Resposta interrompida pelo orçamento de saída; não é extração completa."""
+
+
 class Node3RequirementAnalyzer:
     """
     Nó 3: Análise de Requisitos com IA (Groq + Llama 3.1)
@@ -82,6 +86,10 @@ class Node3RequirementAnalyzer:
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self._output_token_cap = max(1, int(os.getenv("GROQ_OUTPUT_TOKEN_BUDGET", "950")))
+
+        if self._output_budget() <= 1000:
+            self._rpm_budget_override = 1
 
         if not mock_mode:
             self._api_keys = self._load_api_keys()
@@ -109,13 +117,17 @@ class Node3RequirementAnalyzer:
             keys.append(self.api_key)
         return keys
 
+    def _output_budget(self) -> int:
+        return min(getattr(self, "max_tokens", 2500),
+                   getattr(self, "_output_token_cap", 2500))
+
     def _make_llm(self, api_key: str) -> ChatGroq:
         """Cria uma instância do LLM com a chave fornecida."""
         return ChatGroq(
             model_name=self.model_name,
             api_key=api_key,
             temperature=self.temperature,
-            max_tokens=self.max_tokens,
+            max_tokens=self._output_budget(),
             max_retries=0,  # O nó controla esperas e tentativas usando os cabeçalhos.
         )
 
@@ -243,7 +255,7 @@ class Node3RequirementAnalyzer:
         # Reserva também espaço para a resposta configurada.
         estimated = sum((len(str(getattr(m, "content", m))) + 2) // 3 + 8
                         for m in messages)
-        estimated += getattr(self, "max_tokens", 2500)
+        estimated += self._output_budget()
         limit = quota.get("tokens_limit")
         if limit and estimated > limit:
             raise GroqRequestTooLarge(
@@ -276,13 +288,21 @@ class Node3RequirementAnalyzer:
             {"role": "system" if isinstance(m, SystemMessage) else "user",
              "content": m.content} for m in messages
         ]
+        options = {}
+        if self.model_name == "qwen/qwen3.8-27b" and self._output_budget() <= 1000:
+            options["reasoning_effort"] = "none"
         raw = raw_client.create(
             model=self.model_name, messages=groq_messages,
-            temperature=self.temperature, max_tokens=self.max_tokens,
+            temperature=self.temperature, max_tokens=self._output_budget(), **options,
         )
         self._record_quota(raw.headers)
         completion = raw.parse()
-        return AIMessage(content=completion.choices[0].message.content or "")
+        choice = completion.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            raise GroqOutputTruncated(
+                "Resposta truncada pelo teto de saída; dividir a extração antes de publicar."
+            )
+        return AIMessage(content=choice.message.content or "")
 
     def _invoke_with_rotation(self, messages: list, sleep_between: float = 8.0):
         """
@@ -329,7 +349,16 @@ class Node3RequirementAnalyzer:
                                        numbers.get("Limit", "?"), numbers.get("Used", "?"),
                                        numbers.get("Requested", "?"))
                     is_daily_limit = is_daily_limit or "tokens per day" in message.lower() or "tpd" in message.lower()
-                    if not is_daily_limit and (
+                    is_output_limit = ("output tokens per minute" in message.lower()
+                                       or "otpm" in message.lower())
+                    if is_output_limit and numbers.get("Limit", 0) > 0:
+                        cap = max(1, int(numbers["Limit"] * 0.95))
+                        if cap < self._output_budget():
+                            self._output_token_cap = cap
+                            self._rpm_budget_override = 1
+                            logger.warning("Groq OTPM: reduzindo max_tokens para %s", cap)
+                            continue
+                    if not is_daily_limit and not is_output_limit and (
                         (numbers.get("Requested", 0) > numbers.get("Limit", float("inf")))
                         or "request too large" in message.lower()
                     ):
@@ -354,7 +383,7 @@ class Node3RequirementAnalyzer:
                         self._rpm_budget_override = 1
                         if rate_limit_failures >= 3:
                             quota = getattr(self, "_quota", {})
-                            if (details.get("type") == "tokens"
+                            if (not is_output_limit and details.get("type") == "tokens"
                                     and quota.get("tokens_limit")
                                     and quota.get("tokens_remaining", 0) >= quota["tokens_limit"]):
                                 raise GroqRequestTooLarge(
@@ -1866,7 +1895,7 @@ Regras:
             "participacao": agg["requisitos_participacao"],
             "selecao": agg["selecao"],
         }
-        batch_size = 5
+        batch_size = 1 if self._output_budget() <= 1000 else 5
         tasks = [
             (topic, items, offset)
             for topic, items in topics.items()
