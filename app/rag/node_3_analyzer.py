@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 _progress_callback = None
 
 
+class GroqRequestTooLarge(RuntimeError):
+    """O pedido precisa ser reduzido; esperar não altera seu tamanho."""
+
+
 class Node3RequirementAnalyzer:
     """
     Nó 3: Análise de Requisitos com IA (Groq + Llama 3.1)
@@ -230,7 +234,7 @@ class Node3RequirementAnalyzer:
         estimated += getattr(self, "max_tokens", 2500)
         limit = quota.get("tokens_limit")
         if limit and estimated > limit:
-            raise RuntimeError(
+            raise GroqRequestTooLarge(
                 f"A chamada pode exigir cerca de {estimated} tokens, acima da cota "
                 f"de {limit} tokens/min informada pela Groq. Reduza o lote ou use "
                 "um limite maior; o checkpoint continua salvo."
@@ -292,6 +296,13 @@ class Node3RequirementAnalyzer:
                     details = body.get("error", body) if isinstance(body, dict) else {}
                     if not isinstance(details, dict):
                         details = {}
+                    message = str(details.get("message", "")) + " " + err_str
+                    counts = {
+                        label: re.search(rf"\b{label}\s*[:=]?\s*([\d,]+)", message, re.I)
+                        for label in ("Limit", "Used", "Requested")
+                    }
+                    numbers = {label: int(match.group(1).replace(",", ""))
+                               for label, match in counts.items() if match}
                     logger.warning(
                         "Groq 429: tipo=%s, código=%s, retry-after=%s; "
                         "tokens/min restantes=%s, requisições/dia restantes=%s",
@@ -300,6 +311,18 @@ class Node3RequirementAnalyzer:
                         headers.get("x-ratelimit-remaining-tokens", "?"),
                         headers.get("x-ratelimit-remaining-requests", "?"),
                     )
+                    if numbers:
+                        logger.warning("Groq: limite=%s; usados=%s; solicitados=%s tokens",
+                                       numbers.get("Limit", "?"), numbers.get("Used", "?"),
+                                       numbers.get("Requested", "?"))
+                    is_daily_limit = is_daily_limit or "tokens per day" in message.lower() or "tpd" in message.lower()
+                    if not is_daily_limit and (
+                        (numbers.get("Requested", 0) > numbers.get("Limit", float("inf")))
+                        or "request too large" in message.lower()
+                    ):
+                        raise GroqRequestTooLarge(
+                            "Groq recusou o tamanho deste pedido de tokens; dividindo o lote."
+                        ) from e
                     if is_daily_limit:
                         # Limite diário esgotado — tenta próxima chave
                         logger.warning(f"Chave {self._current_key_idx + 1} esgotou limite diário.")
@@ -316,6 +339,14 @@ class Node3RequirementAnalyzer:
                         # Respeita o prazo informado pela API, sem assumir 60s.
                         self._rpm_budget_override = 1
                         if rate_limit_failures >= 3:
+                            quota = getattr(self, "_quota", {})
+                            if (details.get("type") == "tokens"
+                                    and quota.get("tokens_limit")
+                                    and quota.get("tokens_remaining", 0) >= quota["tokens_limit"]):
+                                raise GroqRequestTooLarge(
+                                    "Groq recusou este pedido mesmo com saldo de tokens/min "
+                                    "renovado; tentando um lote menor."
+                                ) from e
                             raise RuntimeError(
                                 "Groq manteve o limite de uso (429) "
                                 "após três esperas; retome após a cota ficar disponível. "
@@ -1443,6 +1474,67 @@ Regras:
             return last_parsed, verified
         raise last_error or RuntimeError("Lote sem JSON válido")
 
+    def _extract_budgeted_batch(self, batch: list[dict], system_msg,
+                                preceding: list[dict], checkpoint: dict,
+                                batch_number: int) -> tuple[dict, dict]:
+        """Divide pedidos grandes e salva cada parte antes de continuar."""
+        cache = checkpoint.setdefault("partial_batches", {}).setdefault(str(batch_number), {})
+
+        def merge(left, right):
+            parsed = {}
+            for key in set(left[0]) | set(right[0]):
+                a, b = left[0].get(key), right[0].get(key)
+                if isinstance(a, list) or isinstance(b, list):
+                    parsed[key] = []
+                    for item in (a or []) + (b or []):
+                        if item not in parsed[key]:
+                            parsed[key].append(item)
+                elif key == "nivel_risco":
+                    levels = {"BAIXO": 0, "MEDIO": 1, "ALTO": 2}
+                    parsed[key] = max((a or "BAIXO", b or "BAIXO"),
+                                      key=lambda value: levels.get(value, 0))
+                else:
+                    parsed[key] = a or b
+            sources = {topic: [] for topic in ("participacao", "selecao")}
+            for topic in sources:
+                for item in left[1][topic] + right[1][topic]:
+                    if item not in sources[topic]:
+                        sources[topic].append(item)
+            return parsed, sources
+
+        def walk(start, end):
+            key = f"{start}:{end}"
+            saved = cache.get(key, {})
+            if "parsed" in saved and "sources" in saved:
+                logger.info("Lote %s: reutilizando parte %s salva", batch_number, key)
+                return saved["parsed"], saved["sources"]
+            if not saved.get("split"):
+                context = preceding
+                if start or end != len(batch):
+                    page = batch[start].get("metadata", {}).get("page")
+                    context = [chunk for chunk in preceding + batch[:start]
+                               if chunk.get("metadata", {}).get("page") == page][-2:]
+                try:
+                    result = self._extract_verified_batch(batch[start:end], system_msg, context)
+                except GroqRequestTooLarge:
+                    if end - start <= 1:
+                        raise GroqRequestTooLarge(
+                            "Mesmo um trecho excedeu o limite disponível de tokens. "
+                            "As partes anteriores continuam salvas no checkpoint."
+                        )
+                    cache[key] = {"split": True}
+                    self._save_checkpoint(checkpoint)
+                    logger.warning("Lote %s: dividindo parte %s para caber na cota de tokens",
+                                   batch_number, key)
+                else:
+                    cache[key] = {"parsed": result[0], "sources": result[1]}
+                    self._save_checkpoint(checkpoint)
+                    return result
+            middle = start + (end - start) // 2
+            return merge(walk(start, middle), walk(middle, end))
+
+        return walk(0, len(batch))
+
     @staticmethod
     def _report_context(agg: dict, limit_per_topic: int = 12) -> tuple[str, dict]:
         """Amostra distribuída dos itens extraídos, com cobertura explícita."""
@@ -1559,6 +1651,7 @@ Regras:
             "next_batch": 0, "agg": empty_agg, "max_risk": "BAIXO",
             "rule_sources": {"participacao": [], "selecao": []},
             "unverified_rules": [],
+            "partial_batches": {},
             "explanation_version": self.EXPLANATION_VERSION,
             "explanations": {"participacao": {}, "selecao": {}},
         }
@@ -1590,6 +1683,7 @@ Regras:
                     or saved.get("max_risk") not in {"ALTO", "MEDIO", "BAIXO"}
                     or not isinstance(saved.get("rule_sources"), dict)
                     or not isinstance(saved.get("unverified_rules", []), list)
+                    or not isinstance(saved.get("partial_batches", {}), dict)
                     or any(not isinstance(saved["rule_sources"].get(topic), list)
                            for topic in ("participacao", "selecao"))
                     or len(saved["rule_sources"]["participacao"]) != len(saved["agg"].get("requisitos_participacao", []))
@@ -1599,6 +1693,7 @@ Regras:
             logger.info("Retomando análise: %s/%s lotes de extração já concluídos",
                         saved["next_batch"], total_batches)
             saved.setdefault("unverified_rules", [])
+            saved.setdefault("partial_batches", {})
             if saved.get("explanation_version") != self.EXPLANATION_VERSION:
                 if saved.get("explanation_version") == 3:
                     logger.info("Refazendo apenas explicações pendentes; mantendo as confirmadas e a extração")
@@ -2032,8 +2127,8 @@ Regras:
                     if older.get("metadata", {}).get("page") != batch[0].get("metadata", {}).get("page"):
                         break
                     previous.insert(0, older)
-                parsed, extracted_rules = self._extract_verified_batch(
-                    batch, system_msg, previous
+                parsed, extracted_rules = self._extract_budgeted_batch(
+                    batch, system_msg, previous, checkpoint, b_idx + 1
                 )
                 for candidate in parsed.get("_unverified_rules", []):
                     checkpoint["unverified_rules"].append({**candidate, "lote": b_idx + 1})
@@ -2073,13 +2168,14 @@ Regras:
                     logger.info(f"  batch {b_idx+1}/{total}: +{gained} itens (total={total_acc})")
 
                 checkpoint.update(next_batch=b_idx + 1, agg=agg, max_risk=max_risk)
+                checkpoint["partial_batches"].pop(str(b_idx + 1), None)
                 self._save_checkpoint(checkpoint)
 
             except Exception as e:
                 logger.error(f"  batch {b_idx+1} erro: {e}")
                 raise RuntimeError(
                     f"Análise incompleta: falha no lote {b_idx + 1}/{total}; "
-                    "os lotes anteriores foram salvos para retomada."
+                    "os lotes anteriores e as partes concluídas foram salvos para retomada."
                 ) from e
 
             if b_idx + 1 < total:
