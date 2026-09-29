@@ -9,6 +9,63 @@ from typing import Dict, List
 
 
 class TestTransientGroqFailures:
+    def test_otpm_reduces_output_budget_without_splitting_input(self, monkeypatch):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        class Limited(Exception):
+            status_code = 429
+            body = {"error": {"type": "tokens", "message":
+                "Request too large on output tokens per minute (OTPM): Limit 1000, Requested 1770"}}
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node.model_name = "qwen/qwen3.8-27b"
+        node.temperature = 0.3
+        node.max_tokens = 2500
+        calls = []
+        def create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise Limited("429")
+            return SimpleNamespace(headers={}, parse=lambda: SimpleNamespace(choices=[
+                SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="ok"))]))
+        node.llm = SimpleNamespace(client=SimpleNamespace(
+            with_raw_response=SimpleNamespace(create=create)))
+        clock = [100.0]
+        waits = []
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+        def sleep(seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+        monkeypatch.setattr(module.time, "sleep", sleep)
+        messages = [module.HumanMessage(content="original input")]
+        assert node._invoke_with_rotation(messages).content == "ok"
+        assert [call["max_tokens"] for call in calls] == [2500, 950]
+        assert calls[1]["reasoning_effort"] == "none"
+        assert "reasoning_effort" not in calls[0]
+        assert calls[0]["messages"] == calls[1]["messages"]
+        assert waits == [61.0]
+
+    def test_truncated_json_is_not_accepted_as_complete(self):
+        from types import SimpleNamespace
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node.model_name = "model"
+        node.temperature = 0.3
+        node.max_tokens = 2500
+        node._output_token_cap = 950
+        calls = []
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(headers={}, parse=lambda: SimpleNamespace(choices=[
+                SimpleNamespace(finish_reason="length", message=SimpleNamespace(content='{"documentos": []}'))]))
+        node.llm = SimpleNamespace(client=SimpleNamespace(
+            with_raw_response=SimpleNamespace(create=create)))
+        with pytest.raises(module.GroqOutputTruncated, match="truncada"):
+            node._invoke_groq([module.HumanMessage(content="input")])
+        assert calls[0]["max_tokens"] == 950
+        assert "reasoning_effort" not in calls[0]
+
     def test_error_detail_keeps_limit_scope_and_hides_credentials(self):
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
 
