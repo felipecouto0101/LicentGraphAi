@@ -65,6 +65,7 @@ Verifique também se o Python ativo é o do ambiente virtual (`python -c "import
 | --- | --- |
 | `GROQ_API_KEY` | Obrigatória para análise real. |
 | `GROQ_API_KEY_2` a `GROQ_API_KEY_5` | Chaves adicionais opcionais; a rotação é usada quando uma chave esgota a cota diária. |
+| `GROQ_OUTPUT_TOKEN_BUDGET` | Máximo de tokens de saída por chamada do Nó 3 (padrão: `950`), limitado também pelo `max_tokens` configurado. |
 | `GROQ_RPM_BUDGET` | Teto local preventivo de chamadas ao Nó 3 por minuto (padrão: `10`). Ajuste para um valor igual ou inferior ao RPM da sua conta Groq. Não alterna chaves por chamada. |
 | `NODE3_MOCK_MODE` | `false` por padrão; `true` gera dados de demonstração sem chamar a Groq. |
 | `CHROMA_PERSIST_DIRECTORY` | Diretório do banco vetorial; padrão `./data/vector_db`. |
@@ -152,3 +153,7 @@ app/streamlit_app.py             Interface
 start_app.py                     Inicia API e interface
 tests/                           Testes
 ```
+
+O limite de saída por minuto (OTPM) é separado do saldo de tokens exibido nos cabeçalhos. O Nó 3 usa um teto preventivo de 950 tokens por resposta; se a mensagem de erro informar um OTPM inferior, reduz `max_tokens` e tenta novamente respeitando o espaçamento local. Respostas com `finish_reason=length` não são aceitas como extrações completas: o lote é dividido e as partes concluídas permanecem no checkpoint. Com orçamento de até 1.000 tokens, as explicações são geradas um item por chamada. Isso aumenta o número de chamadas, mas evita tentar gerar cinco explicações em uma saída pequena. Se uma resposta de um único trecho ainda for truncada, a análise para com o progresso salvo.
+
+Nesse orçamento pequeno, o modelo `qwen/qwen3.8-27b` recebe `reasoning_effort="none"` para dedicar a saída ao resultado. A LLM continua fazendo a análise e as explicações. O teto preventivo de até 1.000 tokens também limita o Nó 3 a uma chamada por minuto; chamadas externas ao processo ainda podem disputar a cota da organização.
