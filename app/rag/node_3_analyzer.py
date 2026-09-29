@@ -157,6 +157,18 @@ class Node3RequirementAnalyzer:
         return 60.0
 
     @staticmethod
+    def _groq_error_detail(error: Exception) -> str:
+        """Mostra a explicação da API, sem imprimir chave ou corpo do pedido."""
+        body = getattr(error, "body", None)
+        details = body.get("error", body) if isinstance(body, dict) else {}
+        detail = details.get("message") if isinstance(details, dict) else None
+        if not isinstance(detail, str) or not detail.strip():
+            return "A exceção não forneceu o campo message da Groq."
+        detail = re.sub(r"\bgsk_[A-Za-z0-9_-]+", "[chave ocultada]", detail)
+        detail = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [ocultado]", detail)
+        return " ".join(detail.split())[:1500]
+
+    @staticmethod
     def _reset_seconds(value: str | None) -> float | None:
         if not value:
             return None
@@ -311,6 +323,7 @@ class Node3RequirementAnalyzer:
                         headers.get("x-ratelimit-remaining-tokens", "?"),
                         headers.get("x-ratelimit-remaining-requests", "?"),
                     )
+                    logger.warning("Detalhe Groq 429: %s", self._groq_error_detail(e))
                     if numbers:
                         logger.warning("Groq: limite=%s; usados=%s; solicitados=%s tokens",
                                        numbers.get("Limit", "?"), numbers.get("Used", "?"),
@@ -321,7 +334,8 @@ class Node3RequirementAnalyzer:
                         or "request too large" in message.lower()
                     ):
                         raise GroqRequestTooLarge(
-                            "Groq recusou o tamanho deste pedido de tokens; dividindo o lote."
+                            "Groq recusou o tamanho deste pedido de tokens: "
+                            + self._groq_error_detail(e)
                         ) from e
                     if is_daily_limit:
                         # Limite diário esgotado — tenta próxima chave
@@ -1516,12 +1530,13 @@ Regras:
                                if chunk.get("metadata", {}).get("page") == page][-2:]
                 try:
                     result = self._extract_verified_batch(batch[start:end], system_msg, context)
-                except GroqRequestTooLarge:
+                except GroqRequestTooLarge as error:
                     if end - start <= 1:
                         raise GroqRequestTooLarge(
                             "Mesmo um trecho excedeu o limite disponível de tokens. "
-                            "As partes anteriores continuam salvas no checkpoint."
-                        )
+                            "As partes anteriores continuam salvas no checkpoint. "
+                            + str(error)
+                        ) from error
                     cache[key] = {"split": True}
                     self._save_checkpoint(checkpoint)
                     logger.warning("Lote %s: dividindo parte %s para caber na cota de tokens",
