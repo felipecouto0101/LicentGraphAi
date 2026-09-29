@@ -9,6 +9,17 @@ from typing import Dict, List
 
 
 class TestTransientGroqFailures:
+    def test_error_detail_keeps_limit_scope_and_hides_credentials(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+
+        class Limited(Exception):
+            body = {"error": {"message": "Input tokens per minute: Limit 1000, Requested 1811. "
+                                         "Key gsk_exampleSecret Bearer otherSecret"}}
+        detail = Node3RequirementAnalyzer._groq_error_detail(Limited())
+        assert "Input tokens per minute: Limit 1000, Requested 1811" in detail
+        assert "exampleSecret" not in detail
+        assert "otherSecret" not in detail
+
     def test_oversized_token_request_is_not_retried_unchanged(self, monkeypatch):
         from types import SimpleNamespace
         from app.rag import node_3_analyzer as module
