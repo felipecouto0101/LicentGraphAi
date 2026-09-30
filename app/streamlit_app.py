@@ -145,7 +145,8 @@ def _subtopic_card(sub, organized):
             with st.expander("Conferir trechos de origem"):
                 for block in sub.get("source_blocks", evidence_blocks(evidence)):
                     with st.container(border=True):
-                        label = f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF"
+                        label = ("Fonte: páginas " + _pages(block["pages"]) if len(block.get("pages", [])) > 1
+                                 else f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF")
                         if block.get("item"):
                             label += f" · item {block['item']}"
                         st.caption(label)
@@ -155,7 +156,8 @@ def _subtopic_card(sub, organized):
                             st.markdown(table_html(block["table"]), unsafe_allow_html=True)
                             continue
                         if block.get("expanded"):
-                            st.caption("Contexto recuperado do texto original do PDF.")
+                            st.caption("Item recuperado entre páginas consecutivas do PDF." if block.get("context_status") == "clause_across_pages"
+                                       else "Contexto recuperado do texto original do PDF.")
                         elif block.get("context_status") == "selected_only":
                             st.caption("Trecho selecionado; não foi possível recuperar a continuação com segurança.")
                         if block.get("continuation_pending"):
