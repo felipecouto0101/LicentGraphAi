@@ -50,6 +50,7 @@ def _run_organization_job(job_id: str):
     """Organiza nomes e agrupamentos; retém o índice e lotes válidos após falhas."""
     from app.rag.topic_organizer import organize_topic_map, inspect_annex_references
     from app.rag.topic_map import all_chunk_ids
+    from app.rag.source_recovery import SourceRecovery
     with _jobs_lock:
         session = _documents[job_id]
     try:
@@ -61,6 +62,7 @@ def _run_organization_job(job_id: str):
         else:
             validate_analysis_configuration()
         with session["lock"]:
+            recovery = SourceRecovery(session.get("pages_text", []), session["chunks"])
             if session["llm"] is None:
                 if provider == "gemini":
                     session["llm"] = GeminiTopicClient(progress=lambda **kw: _update_progress(job_id, **kw))
@@ -76,6 +78,7 @@ def _run_organization_job(job_id: str):
                     HumanMessage(content=json.dumps(payload, ensure_ascii=False))])
                 return session["llm"]._parse_llm_json(response.content)
             def publish_partial(topic_map):
+                topic_map = recovery.enrich(topic_map)
                 with _jobs_lock:
                     _jobs[job_id]["result"].update(topic_map=topic_map, partial_map=True)
             organized = organize_topic_map(
@@ -86,6 +89,7 @@ def _run_organization_job(job_id: str):
                 batch_max_entries=12 if provider == "gemini" else 8)
             if all_chunk_ids(organized) != all_chunk_ids(session["structural_topics"]):
                 raise ValueError("A organização perdeu referências do PDF.")
+            organized = recovery.enrich(organized)
             session["topics"] = organized
         with _jobs_lock:
             _jobs[job_id]["result"].update(topic_map=organized, organization_status="done", organization_error=None, partial_map=False,
@@ -118,7 +122,8 @@ def _run_topic_job(job_id: str, file_path: str):
         if not chunks:
             raise ValueError("O PDF não contém texto extraível.")
         topic_map = build_topic_map(chunks)
-        session = {"chunks": chunks, "topics": topic_map, "structural_topics": topic_map,
+        session = {"chunks": chunks, "pages_text": parsed.get("pages_text", []),
+                   "topics": topic_map, "structural_topics": topic_map,
                    "organization_cache": {}, "llm": None, "lock": threading.Lock()}
         with _jobs_lock:
             _documents[job_id] = session
