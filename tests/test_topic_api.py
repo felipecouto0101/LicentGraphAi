@@ -69,7 +69,7 @@ class APITests(unittest.TestCase):
                 if "passages" in self.calls[-1]:
                     entry = self.calls[-1]["passages"][0]
                     output = {"topics": [{"theme": "Documentação", "title": "Capacidade técnica",
-                        "sources": [{"id": entry["id"], "quote": entry["text"][:80]}]}]}
+                        "sources": [{"id": entry["id"], "lines": [1]}]}]}
                 else:
                     output = {"themes": [{"title": "Documentos para participar", "subtopics": [
                         {"title": "Capacidade técnica", "source_ids": ["0"]}]}]}
