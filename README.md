@@ -22,7 +22,20 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Configure `GROQ_API_KEY` no `.env` e mantenha `NODE3_MOCK_MODE=false`. A organização usa IA real. Inicie:
+Configure no `.env` para usar Gemini no mapa de assuntos:
+
+```dotenv
+TOPIC_LLM_PROVIDER=gemini
+GEMINI_API_KEY=sua_chave_local
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_RPM_BUDGET=10
+GEMINI_TPM_BUDGET=100000
+GEMINI_RPD_BUDGET=500
+GEMINI_OUTPUT_TOKEN_BUDGET=8192
+NODE3_MOCK_MODE=false
+```
+
+Não envie o `.env` ao GitHub. A organização usa IA real. Inicie:
 
 ```powershell
 python start_app.py
@@ -56,9 +69,10 @@ O mapa atual **não gera embeddings nem indexa no ChromaDB**, pois consulta e ch
 | --- | --- |
 | Python e pdfplumber | Leitura do PDF e preservação das páginas. |
 | LangChain | Fragmentação do texto, mensagens e integração com a LLM. |
-| Groq e Qwen | Organização de temas e subtemas; controle de cotas reutiliza o cliente existente. |
+| Gemini Flash-Lite | Organização do mapa via REST, JSON estruturado e orçamento de saída próprio. |
+| Groq e Qwen | Provedor alternativo do mapa e modelo do fluxo completo anterior. |
 | FastAPI | Upload, execução em background, progresso e retomada. |
-| Streamlit | Envio do documento, mapa em duas colunas, busca e fontes. |
+| Streamlit | Envio do documento, temas expansíveis, busca, fontes e mensagens de espera e recuperação. |
 | LangGraph | Orquestra o pipeline completo anterior, disponível em `/analyze/full`. |
 | Sentence Transformers e ChromaDB | Embeddings e busca vetorial do pipeline completo anterior; não executados no mapa desta etapa. |
 
@@ -110,3 +124,22 @@ Reinicie o backend após alterar a configuração. O cliente mantém a conta atu
 O padrão de `GROQ_INDEPENDENT_ACCOUNTS` é `false`: chaves da mesma organização compartilham os limites da Groq e não devem ativar essa opção. O controle é local ao cliente e não coordena processos ou aplicações externos usando as mesmas contas. Todas as contas indisponíveis, falhas persistentes ou pedidos grandes demais continuam interrompendo com erro recuperável. Trocar contas não corrige citações inválidas nem respostas truncadas. Não há garantia de aceleração de três vezes.
 
 Testes do escalonador (sem chamadas à API): `python -m pytest tests/test_groq_account_scheduler.py -q`.
+
+### Gemini no mapa de assuntos
+
+`TOPIC_LLM_PROVIDER=gemini` seleciona o Gemini somente para o mapa; `/analyze/full` continua usando o pipeline Groq/LangGraph anterior. Sem seleção explícita, uma `GEMINI_API_KEY` configurada seleciona Gemini; caso contrário, usa Groq. Para voltar, configure `TOPIC_LLM_PROVIDER=groq` e reinicie o backend.
+
+O cliente REST usa a biblioteca padrão do Python, sem uma nova dependência. Solicita JSON com esquema para identificação e agrupamento, mantém validação das linhas originais e rejeita respostas truncadas. Para Gemini, a identificação começa com até 12 trechos ou 16.000 caracteres por lote, saída de até 8.192 tokens e pensamento mínimo no modelo indicado. Lotes que ainda não couberem são subdivididos sem publicar respostas incompletas.
+
+Os valores de 10 RPM, 100.000 tokens de entrada/minuto e 500 RPD são orçamentos locais baseados nas cotas informadas para este projeto; não são cotas universais nem saldo consultado no Google. O cliente espaça inícios de chamadas em cerca de 6,1 segundos, estima a entrada conservadoramente e atualiza o consumo com `usageMetadata`. Não impõe a espera de um minuto nem o teto de saída da Groq ao Gemini. Esperas, novas tentativas, correções e subdivisões são publicadas no progresso da interface, com contagem regressiva de espera.
+
+Reservas locais são compartilhadas entre jobs com a mesma chave/modelo no mesmo processo. Para várias chaves do mesmo projeto, defina o mesmo `GEMINI_QUOTA_GROUP` em todos os clientes. O contador diário usa uma janela móvel conservadora de 24 horas e fica em memória. Ele não representa o saldo real do projeto, não acompanha outros processos/aplicações e é zerado ao reiniciar; a API continua sendo a autoridade sobre as cotas. Um 429 respeita o prazo retornado; falhas temporárias têm até três novas tentativas. Interrupções preservam apenas lotes já validados na sessão, conforme a seção de retomada.
+
+Validação sem credenciais:
+
+```bash
+python -m unittest discover -s tests -p 'test_gemini*.py' -v
+python -m unittest discover -s tests -p 'test_topic*.py' -v
+```
+
+Os testes simulam REST, cotas compartilhadas, RPM/TPM/RPD, recuperação de 429/503, autenticação, truncamento, integração upload → mapa e mensagens do frontend. Velocidade e qualidade com a API real precisam ser medidas com a chave local e o mesmo edital; não há garantia de aceleração.
