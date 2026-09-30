@@ -93,6 +93,29 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual([b["page"] for b in blocks], [1, 2])
         self.assertTrue(blocks[0]["continuation_pending"])
 
+    def test_medical_inspection_continuation_hides_repeated_isolated_word(self):
+        pages = ["21.4.4 A inspeção médica oficial terá caráter eliminatório e compreenderá avaliação clínica, incluindo anamnese e exames\nEdital de Abertura nº 007/2026 Página 1 de 2",
+                 "de aptidão física e mental, bem como a avaliação dos exames complementares exigidos pela regulamentação\nvigente.\n21.4.5 Serão convocados os candidatos homologados.\n21.4.6 Deverão agendar a inspeção.\n21.4.7 Outra regra da legislação vigente."]
+        evidence = [row("21.4.4 A inspeção", page=1), row("de aptidão física e mental", page=2),
+                    row("21.4.5 Serão", page=2), row("21.4.6 Deverão", page=2), row("vigente.", page=2)]
+        topics = [{"subtopics": [{"evidence": evidence}]}]
+        SourceRecovery(pages, []).enrich(topics)
+        sub = topics[0]["subtopics"][0]
+        self.assertEqual([b["item"] for b in sub["source_blocks"]], ["21.4.4", "21.4.5", "21.4.6"])
+        first = sub["source_blocks"][0]
+        self.assertEqual(first["pages"], [1, 2])
+        self.assertIn("exames de aptidão física", first["text"])
+        self.assertTrue(first["text"].endswith("regulamentação vigente."))
+        self.assertNotIn("Edital de Abertura", first["text"])
+        self.assertFalse(first["continuation_pending"])
+        self.assertEqual(sub["evidence"], evidence)
+
+    def test_ambiguous_sentence_with_uncovered_occurrence_is_retained(self):
+        text = "2.1 Documento obrigatório.\n2.2 Documento obrigatório."
+        blocks = recover(text, [row("2.1 Documento"), row("Documento obrigatório.")])
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[1]["context_status"], "selected_only")
+
     def test_missing_page_or_quote_preserves_verified_selection(self):
         blocks = recover('Outro texto.', [row('Regra selecionada.')])
         self.assertEqual(blocks[0]['text'], 'Regra selecionada.')
