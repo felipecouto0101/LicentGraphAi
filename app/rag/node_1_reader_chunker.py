@@ -117,6 +117,7 @@ class Node1ReaderChunker:
         result = {
             "full_text": full_text,
             "page_count": page_count,
+            "pages_text": list(pages),
             "chunks": all_chunks,
             "total_chunks": len(all_chunks),
             "processing_method": ("document_structure" if self.preserve_document_structure
