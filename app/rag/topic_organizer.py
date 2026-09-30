@@ -6,7 +6,7 @@ import re
 import unicodedata
 
 logger = logging.getLogger(__name__)
-VERSION = 4
+VERSION = 5
 
 
 def _key(title):
@@ -58,11 +58,27 @@ def _cache_key(stage, payload):
             sort_keys=True).encode()).hexdigest())
 
 
+def _source_line_records(text):
+    """Same source indices as before, with original whitespace between fragments."""
+    records, cursor, previous_end = [], 0, None
+    for raw in text.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        for offset in range(0, len(line), 160):
+            part = line[offset:offset + 160]
+            trimmed = part.strip()
+            if not trimmed:
+                continue
+            start = cursor + offset + len(part) - len(part.lstrip())
+            end = cursor + offset + len(part.rstrip())
+            records.append({"text": trimmed,
+                            "join_before": text[previous_end:start] if previous_end is not None else ""})
+            previous_end = end
+        cursor += len(raw)
+    return records
+
+
 def _source_lines(text):
-    """Linhas curtas e determinísticas: a IA seleciona índices, não copia citações."""
-    return [part.strip() for line in text.splitlines()
-            for offset in range(0, len(line), 160)
-            if (part := line[offset:offset + 160]).strip()]
+    return [record["text"] for record in _source_line_records(text)]
 
 
 def _validate_extraction(parsed, batch):
@@ -85,7 +101,8 @@ def _validate_extraction(parsed, batch):
                 raise ValueError("Fonte inválida.")
             source_id = source.get("id")
             entry = aliases.get(source_id, entries.get(source_id)) if isinstance(source_id, str) else None
-            lines = _source_lines(entry["text"]) if entry else []
+            records = _source_line_records(entry["text"]) if entry else []
+            lines = [record["text"] for record in records]
             chosen = source.get("lines")
             if entry is None:
                 raise ValueError(f"ID de fonte desconhecido: {source_id!r}. IDs permitidos: {list(aliases)}")
@@ -100,7 +117,8 @@ def _validate_extraction(parsed, batch):
             for number in chosen:
                 evidence = {"source_id": entry["id"], "chunk_id": entry["chunk_id"],
                             "page": entry["page"], "line": number, "quote": lines[number - 1],
-                            "source_titles": entry["section"]}
+                            "source_titles": entry["section"],
+                            "join_before": records[number - 1]["join_before"]}
                 if evidence not in verified:
                     verified.append(evidence)
         result.append({"title": title, "theme": theme, "evidence": verified})
