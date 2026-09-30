@@ -65,15 +65,18 @@ def _run_organization_job(job_id: str):
                     SystemMessage(content=system),
                     HumanMessage(content=json.dumps(payload, ensure_ascii=False))])
                 return session["llm"]._parse_llm_json(response.content)
+            def publish_partial(topic_map):
+                with _jobs_lock:
+                    _jobs[job_id]["result"].update(topic_map=topic_map, partial_map=True)
             organized = organize_topic_map(
                 session["structural_topics"], session["chunks"], invoke,
                 cache=session["organization_cache"],
-                progress=lambda **kw: _update_progress(job_id, **kw))
+                progress=lambda **kw: _update_progress(job_id, **kw), on_partial=publish_partial)
             if all_chunk_ids(organized) != all_chunk_ids(session["structural_topics"]):
                 raise ValueError("A organização perdeu referências do PDF.")
             session["topics"] = organized
         with _jobs_lock:
-            _jobs[job_id]["result"].update(topic_map=organized, organization_status="done", organization_error=None,
+            _jobs[job_id]["result"].update(topic_map=organized, organization_status="done", organization_error=None, partial_map=False,
                                            annex_references=inspect_annex_references(session["chunks"]))
             _jobs[job_id]["status"] = "done"
             _jobs[job_id]["error"] = None
@@ -83,8 +86,9 @@ def _run_organization_job(job_id: str):
         logger.exception("Organização do mapa falhou")
         with _jobs_lock:
             _jobs[job_id]["status"] = "done"
-            _jobs[job_id]["result"].update(organization_status="error", organization_error=str(exc))
-            _jobs[job_id]["progress"]["stage"] = "Organização interrompida; índice original preservado"
+            result = _jobs[job_id]["result"]
+            result.update(organization_status="partial" if result.get("partial_map") else "error", organization_error=str(exc))
+            _jobs[job_id]["progress"]["stage"] = "Organização interrompida; subtemas validados e índice original preservados"
 
 
 def _run_topic_job(job_id: str, file_path: str):
