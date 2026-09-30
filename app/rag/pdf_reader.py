@@ -54,6 +54,9 @@ class PDFReader:
                     self.pages_tables.append(tables)
 
 
+            if preserve_lines:
+                from .pdf_tables import link_table_continuations
+                link_table_continuations(self.pages_tables)
             self.text = "\n\n".join(text for text in self.pages_text if text)
             return self.text
 
