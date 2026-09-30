@@ -7,8 +7,8 @@ A etapa atual entrega somente o mapa de assuntos. Chat, explicações e o antigo
 ## Como usar
 
 1. Envie um PDF com texto extraível pela lateral da interface e clique em **Organizar assuntos**.
-2. Acompanhe a leitura e os lotes de organização. A IA recebe títulos e pequenas amostras do documento, sem gerar explicações.
-3. Busque um assunto ou abra um tema. Os subtemas mostram páginas físicas do PDF e suas seções de origem.
+2. Acompanhe a leitura e os lotes de organização. A IA lê lotes de trechos completos para identificar subtemas, sem gerar explicações.
+3. Busque um assunto ou abra um tema. Os subtemas mostram páginas físicas, citações verificadas dos trechos vinculados e suas seções de origem. Referências a anexos sem cabeçalho identificado aparecem em uma área separada.
 4. Se a organização falhar, o índice estrutural continua disponível, claramente identificado. **Retomar organização com IA** reutiliza lotes válidos na mesma sessão, sem reenviar o PDF.
 
 ## Instalação
@@ -40,12 +40,13 @@ Após atualizar para esta versão, reinicie os dois processos e envie novamente 
 ## Organização do mapa
 
 1. `pdfplumber` extrai páginas preservando linhas. O leitor identifica seções antes de dividir em chunks, reúne títulos quebrados e evita interpretar o sumário como corpo.
-2. Cada subtema estrutural recebe um ID e até três amostras de 240 caracteres, distribuídas entre início, meio e fim de seus trechos.
-3. A IA organiza lotes de até seis entradas em temas e subtemas. Não há nomes nem quantidade de categorias predefinidos. Pedidos truncados ou grandes demais são divididos quando contêm mais de uma entrada.
-4. Uma chamada compacta concilia temas dos lotes anteriores. Subtemas de mesmo nome dentro do grupo são reunidos, preservando todas as fontes.
-5. A validação rejeita referências inventadas, seções omitidas e temas duplicados na consolidação. Os títulos originais, páginas e IDs dos chunks permanecem vinculados ao mapa final.
+2. Todos os chunks são enviados com seu texto completo, IDs e páginas. Chunks acima de 2.400 caracteres são fragmentados sem descarte; lotes são limitados a oito entradas e 8.000 caracteres de texto.
+3. A IA identifica subtemas diferentes dentro de cada trecho, usando títulos curtos e citações literais de até 120 caracteres. Cada referência e citação é conferida no trecho informado. Todos os IDs do lote precisam estar cobertos antes de salvá-lo.
+4. Nomes e sugestões de tema são consolidados em lotes compactos de até 12 assuntos. O modelo pode reunir sinônimos; duplicações de mesmo nome no grupo final são reunidas. Todos os assuntos precisam ser preservados, sem IDs inventados ou repetidos.
+5. Cada subtema recebe somente as páginas, chunks e citações vinculados a ele; não herda todas as páginas da seção estrutural. A interface permite abrir os trechos utilizados.
+6. Uma conferência local compara menções a anexos com cabeçalhos identificados no arquivo, inclusive equivalência entre números romanos e arábicos. Uma referência não localizada não prova ausência: o anexo pode estar em outro arquivo ou ter formatação não reconhecida.
 
-O número normal de chamadas é `ceil(subtemas estruturais / 6) + 1`. Para 48 entradas, são oito chamadas de organização e uma de consolidação; divisões, erros e novas tentativas podem aumentar esse total. Não são geradas centenas de explicações individuais.
+O número de chamadas varia com o volume de texto, assuntos identificados e consolidações. Ler todos os trechos aumenta consumo e tempo em relação às três amostras da versão anterior. Sob o limite observado de uma chamada por minuto, a organização pode levar dezenas de minutos; a saída curta não elimina a espera imposta pela cota. Divisões por tamanho/truncamento podem acrescentar chamadas. Não são geradas explicações individuais.
 
 O mapa atual **não gera embeddings nem indexa no ChromaDB**, pois consulta e chat estão fora desta etapa. Essas tecnologias continuam no pipeline completo anterior.
 
@@ -64,11 +65,11 @@ O mapa atual **não gera embeddings nem indexa no ChromaDB**, pois consulta e ch
 ## API e retomada
 
 - `POST /analyze/upload`: recebe PDF e inicia leitura e organização automática.
-- `GET /job/{job_id}`: informa progresso e devolve `result.topic_map`, `map_version=3` e `organization_status`.
+- `GET /job/{job_id}`: informa progresso e devolve `result.topic_map`, `map_version=4` e `organization_status`.
 - `POST /job/{job_id}/organize-map`: retoma uma organização interrompida. Recusa execução concorrente do mesmo job.
 - `POST /analyze/full`: mantém o pipeline LangGraph anterior, fora desta interface.
 
-Jobs, documentos e lotes validados da organização ficam **em memória**. Uma falha de API permite retomar na mesma sessão; reiniciar o backend exige novo envio. O mapa não utiliza os checkpoints persistentes da análise completa. Os arquivos antigos em `data/checkpoints/` permanecem disponíveis ao fluxo anterior.
+Jobs, documentos e lotes validados da organização ficam **em memória**. Uma falha de API permite retomar na mesma sessão; reiniciar o backend exige novo envio. O cache usa versão e hash do conteúdo enviado, evitando reutilizar lotes de texto diferente. O mapa não utiliza os checkpoints persistentes da análise completa. Os arquivos antigos em `data/checkpoints/` permanecem disponíveis ao fluxo anterior.
 
 ## Cotas e limites
 
@@ -82,7 +83,7 @@ A Groq informou um teto de 1.000 tokens de saída por minuto no cenário observa
 | `GROQ_RPM_BUDGET` | Limite local de chamadas por minuto. |
 | `CHROMA_PERSIST_DIRECTORY` | Diretório vetorial do fluxo completo anterior. |
 
-Cobertura de IDs garante que nenhuma seção indexada seja descartada, mas não comprova classificação semântica correta nem descoberta de todos os assuntos dentro de cada seção. Amostras podem não representar detalhes distantes. Os nomes e agrupamentos devem ser avaliados com editais variados. PDFs digitalizados precisam de OCR, ainda não implementado neste fluxo.
+Cobertura de IDs confirma que todos os trechos enviados receberam ao menos uma referência, mas não garante que a IA identificou cada assunto dentro deles. Citação literal confirma a origem do trecho, não a adequação semântica de todo título. Consolidações limitadas a lotes podem deixar sinônimos em grupos diferentes. Os nomes e agrupamentos devem ser avaliados com editais variados. PDFs digitalizados precisam de OCR, ainda não implementado neste fluxo.
 
 ## Verificação
 
@@ -91,4 +92,4 @@ python -m unittest discover -s tests -p 'test_topic*.py' -v
 python -m py_compile app/rag/topic_map.py app/rag/topic_organizer.py app/api/main.py app/streamlit_app.py
 ```
 
-Testes simulam respostas da IA e cobrem agrupamentos variáveis, referências e páginas, rejeição de omissões, consolidação, divisão após truncamento, reaproveitamento de lotes e fluxo da API. Execução com Groq e avaliação visual do Streamlit precisam das dependências completas e chave configuradas.
+Testes simulam respostas da IA e cobrem texto completo, páginas específicas por subtema, citações falsas, omissões, consolidação de sinônimos, divisão após truncamento, reaproveitamento e invalidação de cache, referências a anexos e fluxo da API. Execução com Groq e avaliação visual do Streamlit precisam das dependências completas e chave configuradas.
