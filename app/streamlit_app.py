@@ -50,7 +50,7 @@ def _poll(api_url, job_id):
         return
     if job["status"] == "done":
         result = job.get("result") or {}
-        if result.get("map_version") != 3 or not result.get("topic_map"):
+        if result.get("map_version") != 4 or not result.get("topic_map"):
             st.error("Atualize e reinicie a aplicação para preparar o novo mapa.")
             if st.button("Voltar ao envio"):
                 _reset()
@@ -117,6 +117,12 @@ def _topic_browser(api_url, job_id, result):
             st.write(result.get("organization_error") or "Organização pendente.")
         if st.button("Retomar organização com IA", type="primary"):
             _retry(api_url, job_id)
+    missing_annexes = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
+    if missing_annexes:
+        with st.expander(f"Anexos mencionados sem seção identificada · {len(missing_annexes)}"):
+            st.write("Não identificamos estes anexos como seções neste arquivo. Eles podem estar em arquivos separados ou ter outro formato de título.")
+            for reference in missing_annexes:
+                st.caption(reference["label"] + " · mencionado nas páginas " + _pages(reference["pages"]))
     search = st.text_input("Buscar um assunto", placeholder="Ex.: documentos, proposta, pagamento", key="topic_search").casefold().strip()
     visible = []
     for theme in themes:
@@ -136,6 +142,17 @@ def _topic_browser(api_url, job_id, result):
                     with st.container(border=True):
                         st.markdown("**" + sub["title"] + "**")
                         st.caption("Páginas do PDF: " + _pages(sub["pages"]))
+                        evidence = sub.get("evidence", [])
+                        if evidence:
+                            with st.expander("Trechos que identificam este assunto"):
+                                shown = set()
+                                for source in evidence:
+                                    key = (source["page"], " ".join(source["quote"].split()).casefold())
+                                    if key in shown:
+                                        continue
+                                    shown.add(key)
+                                    st.caption(f"Página {source['page']}")
+                                    st.write(source["quote"])
                         sources = sub.get("source_titles", [])
                         if sources:
                             with st.expander("Seções de origem"):
@@ -148,7 +165,7 @@ def main():
     st.title("🧭 LicitGraphAi")
     st.write("Um mapa organizado para entender o que seu edital aborda.")
     stored = st.session_state.get("result")
-    if stored and stored.get("map_version") != 3:
+    if stored and stored.get("map_version") != 4:
         _reset()
         st.info("Envie novamente o PDF para organizar os assuntos com IA.")
     with st.sidebar:
