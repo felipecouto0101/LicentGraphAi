@@ -1,5 +1,6 @@
 """Etapa atual: organização e navegação do mapa, sem chat ou explicações."""
 import time
+import re
 import requests
 import streamlit as st
 
@@ -142,51 +143,61 @@ def _subtopic_card(sub, organized):
                     st.write(title)
 
 
+def _theme_label(title):
+    return re.sub(r"^(?:das|dos|da|do)\s+", "", title.strip(), flags=re.I)
+
+
 def _topic_browser(api_url, job_id, result):
     themes = result["topic_map"]
-    organized = result.get("organization_status") == "done"
+    complete = result.get("organization_status") == "done"
+    partial = result.get("organization_status") == "partial"
+    organized = complete or partial
     with st.container(border=True):
         st.caption(result.get("filename", "Edital em PDF"))
-        st.header("Assuntos do seu edital" if organized else "Índice original do PDF")
-        st.caption("Organizado com IA" if organized else "Organização com IA interrompida · índice estrutural disponível")
+        st.header("Mapa parcial de assuntos" if partial else "Assuntos do seu edital" if complete else "Índice original do PDF")
+        st.caption("Subtemas validados · organização incompleta" if partial else "Organizado com IA" if complete
+                   else "Organização com IA interrompida · índice estrutural disponível")
         columns = st.columns(3)
         columns[0].metric("Temas" if organized else "Seções", len(themes))
-        columns[1].metric("Assuntos" if organized else "Subseções", sum(len(t["subtopics"]) for t in themes))
+        columns[1].metric("Assuntos" if organized else "Subseções identificadas",
+            sum(1 for t in themes for sub in t["subtopics"] if organized or sub["title"] not in
+                ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")))
         columns[2].metric("Páginas", result.get("page_count") or "—")
-    if not organized:
+    if not complete:
         with st.container(border=True):
             st.subheader("Organização pendente")
-            st.warning("A IA não concluiu o mapa de assuntos. Você pode consultar as seções originais do PDF abaixo.")
+            st.warning("A organização foi interrompida. Os subtemas já validados estão disponíveis abaixo; o restante ainda está pendente."
+                       if partial else "A IA ainda não produziu subtemas validados. Abaixo aparece somente o índice original do PDF.")
             with st.expander("Detalhes da interrupção", expanded=True):
                 st.write(result.get("organization_error") or "Organização pendente.")
             if st.button("Retomar organização com IA", type="primary"):
                 _retry(api_url, job_id)
     with st.container(border=True):
         st.subheader("Mapa de assuntos" if organized else "Navegação pelas seções do PDF")
-        st.write("Selecione um tema à esquerda para ver seus assuntos à direita." if organized
-                 else "Selecione uma seção para consultar suas subseções e páginas de origem.")
+        st.write("Os subtemas aparecem dentro de cada tema. Abra ou feche os blocos para explorar o mapa." if organized
+                 else "Estas são seções do documento; não representam subtemas gerados pela IA.")
         search = st.text_input("Buscar um assunto" if organized else "Buscar uma seção",
                               placeholder="Ex.: documentos, proposta, pagamento", key="topic_search")
         visible = _visible_themes(themes, search)
         if not visible:
             st.info("Nenhum resultado encontrado. Tente outra palavra.")
         else:
-            navigation, contents = st.columns([1, 2.5], gap="large")
-            by_id = {theme["id"]: (theme, children) for theme, children in visible}
-            with navigation:
-                st.markdown("**Temas**" if organized else "**Seções originais**")
-                if st.session_state.get("theme_choice") not in by_id:
-                    st.session_state.pop("theme_choice", None)
-                chosen = st.selectbox("Escolher tema" if organized else "Escolher seção", list(by_id),
-                    format_func=lambda key: by_id[key][0]["title"], key="theme_choice")
-                st.caption(f"{len(visible)} de {len(themes)} " + ("temas disponíveis" if organized else "seções disponíveis"))
-                theme, children = by_id[chosen]
-                st.caption(_count_label(len(children), organized))
-            with contents:
-                st.subheader(theme["title"])
-                st.caption(_count_label(len(children), organized) + " · referências ao documento original")
-                for sub in children:
-                    _subtopic_card(sub, organized)
+            st.caption(f"{len(visible)} de {len(themes)} " + ("temas" if organized else "seções"))
+            for index, (theme, children) in enumerate(visible):
+                label = _theme_label(theme["title"])
+                real_children = [sub for sub in children if organized or sub["title"] not in
+                                 ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")]
+                count = _count_label(len(real_children), organized) if real_children else "subtemas pendentes"
+                with st.expander(f"{label} · {count}", expanded=bool(search) or index == 0):
+                    if label != theme["title"]:
+                        st.caption("Título de origem: " + theme["title"])
+                    if not real_children:
+                        pages = sorted({page for sub in children for page in sub["pages"]})
+                        st.caption("Páginas do PDF: " + _pages(pages))
+                        st.info("Subtemas ainda não identificados para esta seção.")
+                    else:
+                        for sub in real_children:
+                            _subtopic_card(sub, organized)
         st.caption("As páginas indicam a origem das informações. O mapa ainda não gera explicações.")
     missing = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
     if missing:
