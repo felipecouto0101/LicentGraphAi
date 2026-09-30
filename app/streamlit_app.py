@@ -142,9 +142,18 @@ def _subtopic_card(sub, organized):
         evidence = sub.get("evidence", [])
         if evidence:
             with st.expander("Conferir trechos de origem"):
-                for block in evidence_blocks(evidence):
+                for block in sub.get("source_blocks", evidence_blocks(evidence)):
                     with st.container(border=True):
-                        st.caption(f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF")
+                        label = f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF"
+                        if block.get("item"):
+                            label += f" · item {block['item']}"
+                        st.caption(label)
+                        if block.get("expanded"):
+                            st.caption("Contexto recuperado do texto original do PDF.")
+                        elif block.get("context_status") == "selected_only":
+                            st.caption("Trecho selecionado; não foi possível recuperar a continuação com segurança.")
+                        if block.get("continuation_pending"):
+                            st.caption("O item pode continuar na página seguinte; este bloco contém somente a página indicada.")
                         # Escape document content; preserve lists and paragraph spacing
                         # using the interface font instead of rendering PDF text as Markdown.
                         st.markdown('<div style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65">'
