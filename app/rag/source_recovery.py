@@ -205,9 +205,15 @@ class SourceRecovery:
                     matches = _matches(normalized, quote)
                     # Hide ambiguous repeated selections only when every occurrence
                     # is already represented by verified recovered page intervals.
-                    covered = bool(matches) and all(any(any(segment["page"] == page and segment["start"] <= positions[m]
+                    occurrences_covered = [any(any(segment["page"] == page and segment["start"] <= positions[m]
                         and positions[m + len(quote) - 1] < segment["end"]
-                        for segment in b.get("segments", [b])) for b in blocks.values()) for m in matches)
+                        for segment in b.get("segments", [b])) for b in blocks.values()) for m in matches]
+                    covered = bool(matches) and all(occurrences_covered)
+                    # An ambiguous isolated word is not a standalone rule. If
+                    # already shown in recovered context, avoid a duplicate card;
+                    # retain the original evidence without guessing its location.
+                    word_fragment = bool(re.fullmatch(r"[^\W\d_]+[.!?,;:]?", quote, re.UNICODE))
+                    covered = covered or (word_fragment and any(occurrences_covered))
                     if not covered and signature not in seen:
                         remaining.append(evidence)
                         seen.add(signature)
