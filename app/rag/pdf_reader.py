@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import logging
 
 import pdfplumber
 
@@ -15,6 +16,7 @@ class PDFReader:
         self.pdf_path: Path | None = None
         self.text: str = ""
         self.pages_text: list[str] = []
+        self.pages_tables: list[list[dict]] = []
 
     def load_pdf(self, pdf_path: str, preserve_lines: bool = False) -> str:
         """
@@ -38,10 +40,19 @@ class PDFReader:
         try:
             # Preserva o índice original, inclusive páginas sem texto extraível.
             with pdfplumber.open(self.pdf_path) as pdf:
-                self.pages_text = [
-                    self._clean_text(page.extract_text() or "", preserve_lines=preserve_lines)
-                    for page in pdf.pages
-                ]
+                self.pages_text, self.pages_tables = [], []
+                for page in pdf.pages:
+                    text = self._clean_text(page.extract_text() or "", preserve_lines=preserve_lines)
+                    self.pages_text.append(text)
+                    tables = []
+                    if preserve_lines:
+                        try:
+                            from .pdf_tables import extract_page_tables
+                            tables = extract_page_tables(page, text, self._clean_text)
+                        except Exception:
+                            logging.getLogger(__name__).warning("Não foi possível preservar a estrutura de tabelas desta página.")
+                    self.pages_tables.append(tables)
+
 
             self.text = "\n\n".join(text for text in self.pages_text if text)
             return self.text
