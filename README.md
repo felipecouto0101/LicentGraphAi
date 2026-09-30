@@ -159,3 +159,13 @@ O leitor agora mantém as páginas completas na sessão do mapa. Depois da ident
 Itens como 11.5 e 11.5.1 são separados, e a recuperação termina no próximo cabeçalho/item identificado. Alíneas pertencentes ao item permanecem juntas. Quando a citação aparece mais de uma vez, o chunk original só desambigua se tiver uma localização única. Se página, origem ou limites não puderem ser confirmados, mantém-se o trecho selecionado e um aviso; páginas distintas nunca são fundidas. Um item possivelmente interrompido no fim da página é sinalizado, sem inventar uma continuação. Blocos excepcionalmente grandes têm recuperação limitada. Isso é recuperação de contexto original, não uma explicação nem uma garantia de segmentação perfeita para qualquer diagramação.
 
 Atualize e reinicie a aplicação, depois envie o PDF novamente para guardar as páginas completas na sessão. Mapas de sessões antigas sem esse texto continuam com os trechos selecionados. Testes: `python -m unittest discover -s tests -p 'test_source*.py' -v`.
+
+### Tabelas nas fontes do PDF
+
+O leitor preserva tabelas detectadas por geometria no PDF, com linhas, colunas e células mescladas. Na consulta às fontes, essas regiões são exibidas como tabelas roláveis, em vez de serem refluídas como um parágrafo. Uma continuação em outra página permanece separada e mantém a página original. Cabeçalhos/valores não são completados nem inferidos quando estiverem ausentes.
+
+Códigos numéricos seguidos de hífen, como códigos de cargos, não são tratados como cláusulas. Regiões de tabela confirmadas também ficam fora da identificação de limites de itens numerados, e uma cláusula anterior termina antes da região tabular. Seleções repetidas são ocultadas quando todas as suas ocorrências já estão cobertas por intervalos recuperados; seleções ambíguas ainda não cobertas continuam identificadas como tais, sem duplicar o mesmo texto na mesma página.
+
+Foi conferido o PDF UFBA: páginas 13–15 têm nove regiões tabulares detectadas, incluindo a continuação da tabela 10.7. A extração usa pdfplumber já instalado e não exige chamada à IA. Tabelas sem geometria detectável, imagens e PDFs com diagramação irregular ainda podem exigir conferência do PDF original; isso não implementa OCR nem garante extração perfeita. Reinicie e reenvie o documento para incluir os novos metadados de tabelas.
+
+Teste: `python -m unittest discover -s tests -p 'test_pdf_tables.py' -v`.
