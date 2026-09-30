@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import numpy  # Mantém o módulo carregado durante mocks de sys.modules.
 import sys
 import threading
 import types
