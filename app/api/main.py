@@ -47,7 +47,7 @@ _documents: dict[str, dict] = {}
 
 def _run_organization_job(job_id: str):
     """Organiza nomes e agrupamentos; retém o índice e lotes válidos após falhas."""
-    from app.rag.topic_organizer import organize_topic_map
+    from app.rag.topic_organizer import organize_topic_map, inspect_annex_references
     from app.rag.topic_map import all_chunk_ids
     with _jobs_lock:
         session = _documents[job_id]
@@ -73,7 +73,8 @@ def _run_organization_job(job_id: str):
                 raise ValueError("A organização perdeu referências do PDF.")
             session["topics"] = organized
         with _jobs_lock:
-            _jobs[job_id]["result"].update(topic_map=organized, organization_status="done", organization_error=None)
+            _jobs[job_id]["result"].update(topic_map=organized, organization_status="done", organization_error=None,
+                                           annex_references=inspect_annex_references(session["chunks"]))
             _jobs[job_id]["status"] = "done"
             _jobs[job_id]["error"] = None
         logger.info("Mapa organizado com IA: %s temas, %s subtemas", len(organized),
@@ -91,6 +92,7 @@ def _run_topic_job(job_id: str, file_path: str):
     try:
         from app.rag.node_1_reader_chunker import Node1ReaderChunker
         from app.rag.topic_map import build_topic_map
+        from app.rag.topic_organizer import inspect_annex_references
         with _jobs_lock:
             _jobs[job_id]["status"] = "running"
             _jobs[job_id]["progress"]["stage"] = "Lendo páginas e identificando seções"
@@ -104,9 +106,10 @@ def _run_topic_job(job_id: str, file_path: str):
                    "organization_cache": {}, "llm": None, "lock": threading.Lock()}
         with _jobs_lock:
             _documents[job_id] = session
-            _jobs[job_id]["result"] = {"topic_map": topic_map, "map_version": 3,
+            _jobs[job_id]["result"] = {"topic_map": topic_map, "map_version": 4,
                 "chunks_count": len(chunks), "page_count": parsed.get("page_count"),
-                "organization_status": "running", "organization_error": None}
+                "organization_status": "running", "organization_error": None,
+                "annex_references": inspect_annex_references(chunks)}
         _run_organization_job(job_id)
     except Exception as exc:
         logger.exception("Falha na preparação do mapa de assuntos")
