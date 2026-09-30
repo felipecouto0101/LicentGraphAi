@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from app.rag.pdf_tables import extract_page_tables, table_html
+from app.rag.pdf_tables import extract_page_tables, table_html, is_tabular, link_table_continuations
 from app.rag.pdf_reader import PDFReader
 from app.rag.source_recovery import SourceRecovery, _BOUNDARY
 
@@ -69,6 +69,43 @@ class TableTests(unittest.TestCase):
         table={'start':0,'end':text.index('12.1'),'title':'Dados','cells':[],'row_count':0}
         recovery=SourceRecovery([text],[],[[table]])
         self.assertEqual([m.group('item') for m in recovery.boundaries[1]],['12.1'])
+
+    def test_prose_and_clause_layout_are_not_tables(self):
+        self.assertFalse(is_tabular([[None, "quando"], ["uma frase longa", None], ["a continuação", None]]))
+        self.assertFalse(is_tabular([["um parágrafo"], ["sua continuação"]]))
+        self.assertFalse(is_tabular([["22.1", "", "Uma frase longa " * 10], ["22.2", "", "Outro parágrafo " * 10]]))
+        self.assertTrue(is_tabular([["Descrição", "Preço"], ["Produto", "100"]]))
+
+    def test_adjacent_aligned_table_grids_link_without_inventing_rows(self):
+        a = {"id": "table-0", "title": "TABELA 2.1", "bbox": [30,600,560,780], "page_height": 842,
+             "column_count": 9, "rows": [["205", "Cargo A"]]}
+        b = {"id": "table-0", "title": "Tabela do PDF", "bbox": [30,36,560,390], "page_height": 842,
+             "column_count": 9, "rows": [["206", "Cargo B"]]}
+        link_table_continuations([[a], [b]])
+        self.assertEqual(a["continuations"], [{"page": 2, "id": "table-0"}])
+        self.assertEqual(b["title"], "TABELA 2.1 · continuação")
+        self.assertEqual(b["rows"], [["206", "Cargo B"]])
+
+    def test_new_caption_or_different_columns_prevent_table_link(self):
+        a = {"id": "a", "title": "TABELA 1", "bbox": [0,90,50,100], "page_height": 100, "column_count": 3}
+        b = {"id": "b", "title": "TABELA 2", "bbox": [0,0,50,50], "column_count": 3}
+        link_table_continuations([[a], [b]])
+        self.assertNotIn("continuations", a)
+        b["title"], b["column_count"] = "Tabela do PDF", 2
+        link_table_continuations([[a], [b]])
+        self.assertNotIn("continuations", a)
+
+    def test_selection_in_table_continuation_includes_original_page(self):
+        a = {"id": "a", "start": 0, "end": 6, "title": "Tabela", "cells": [], "row_count": 0,
+             "continuations": [{"page": 2, "id": "b"}]}
+        b = {"id": "b", "start": 0, "end": 6, "title": "Tabela · continuação", "cells": [], "row_count": 0,
+             "continued_from": {"page": 1, "id": "a"}}
+        topics = [{"subtopics": [{"pages": [2], "evidence": [
+            {"page": 2, "quote": "DadosB", "chunk_id": 2, "source_id": "b", "line": 1}]}]}]
+        SourceRecovery(["DadosA", "DadosB"], [], [[a], [b]]).enrich(topics)
+        sub = topics[0]["subtopics"][0]
+        self.assertEqual([block["page"] for block in sub["source_blocks"]], [1, 2])
+        self.assertEqual(sub["pages"], [1, 2])
 
     def test_page_continuation_table_remains_separate(self):
         tables=[[{'start':0,'end':6,'title':'Tabela original','cells':[],'row_count':0}],
