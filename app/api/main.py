@@ -67,7 +67,8 @@ def _run_topic_job(job_id: str, file_path: str):
         with _jobs_lock:
             _jobs[job_id]["status"] = "running"
             _jobs[job_id]["progress"]["stage"] = "Lendo páginas e identificando seções"
-        chunks = Node1ReaderChunker().process_pdf(file_path)["chunks"]
+        chunks = Node1ReaderChunker(chunk_by_sections=False,
+                                   preserve_document_structure=True).process_pdf(file_path)["chunks"]
         if not chunks:
             raise ValueError("O PDF não contém texto extraível.")
         topic_map = build_topic_map(chunks)
@@ -79,12 +80,14 @@ def _run_topic_job(job_id: str, file_path: str):
             persist_directory=os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db"),
         )
         topic_map = merge_similar_themes(topic_map, indexer.embeddings)
+        logger.info("Mapa preparado: %s temas, %s subtemas, %s trechos",
+                    len(topic_map), sum(len(theme["subtopics"]) for theme in topic_map), len(chunks))
         session = {"chunks": chunks, "topics": topic_map,
                    "collection": indexed["collection_id"], "llm": None,
                    "lock": threading.Lock()}
         with _jobs_lock:
             _documents[job_id] = session
-            _jobs[job_id]["result"] = {"topic_map": topic_map,
+            _jobs[job_id]["result"] = {"topic_map": topic_map, "map_version": 2,
                                        "chunks_count": len(chunks)}
             _jobs[job_id]["status"] = "done"
     except Exception as exc:
