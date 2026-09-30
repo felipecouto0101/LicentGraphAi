@@ -58,7 +58,7 @@ class APITests(unittest.TestCase):
 
     def test_index_does_not_call_llm(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
-        node1.Node1ReaderChunker = lambda: types.SimpleNamespace(
+        node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
             process_pdf=lambda path: {"chunks": [self.chunk]})
         node2 = types.ModuleType("app.rag.node_2_embeddings")
         class Indexer:
@@ -71,6 +71,7 @@ class APITests(unittest.TestCase):
             self.api._run_topic_job("job", "edital.pdf")
         self.assertEqual(self.api._jobs["job"]["status"], "done")
         self.assertEqual(self.api._jobs["job"]["result"]["chunks_count"], 1)
+        self.assertEqual(self.api._jobs["job"]["result"]["map_version"], 2)
         self.assertEqual(self.api._documents["job"]["topics"][0]["subtopics"][0]["chunk_ids"], [1])
         self.assertIsNone(self.api._documents["job"]["llm"])
 
