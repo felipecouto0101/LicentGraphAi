@@ -152,11 +152,11 @@ def _topic_browser(api_url: str, job_id: str, result: dict):
                 st.write(row["content"])
                 for citation in row.get("citations", []):
                     st.caption(f"Página {citation['page']}: {citation['quote']}")
+        search_whole_pdf = (st.checkbox("Pesquisar em todo o edital", value=False)
+                            if selected else True)
         question = st.chat_input("Pergunte sobre este assunto ou sobre todo o edital")
         if question:
-            # Uma pergunta livre busca em todo o PDF; depois de clicar em um
-            # subtema, a explicação do botão fica restrita às suas fontes.
-            _ask(api_url, job_id, question, None)
+            _ask(api_url, job_id, question, None if search_whole_pdf else selected)
             st.rerun()
 
 
