@@ -1398,7 +1398,20 @@ Regras:
                     or type(chunk_index) is not int or not 1 <= chunk_index <= len(batch)):
                 raise ValueError("Regra sem título, citação ou trecho de origem válido")
             source_chunk = batch[chunk_index - 1]
-            page = source_chunk.get("metadata", {}).get("page")
+            metadata = source_chunk.get("metadata", {})
+            page = metadata.get("page")
+            # Reconstrói somente a fronteira contígua de um subtrecho. Assim,
+            # uma citação/condição que começa na parte anterior pode ser validada
+            # sem inventar texto nem buscar evidência em outra página.
+            start = metadata.get("source_char_start")
+            if type(start) is int and start > 0:
+                prefix = next((chunk for chunk in reversed(preceding or [])
+                               if chunk.get("metadata", {}).get("page") == page
+                               and chunk.get("metadata", {}).get("chunk_id") == metadata.get("chunk_id")
+                               and chunk.get("metadata", {}).get("source_char_end") == start), None)
+                if prefix is not None:
+                    source_chunk = {**source_chunk,
+                                    "content": prefix["content"] + source_chunk["content"]}
             if page is None:
                 raise ValueError("Citação da regra não aparece no trecho e página informados")
             if literal(quote) not in literal(source_chunk.get("content", "")):
@@ -1415,7 +1428,7 @@ Regras:
             condition_supported = not condition or any(
                 c.get("metadata", {}).get("page") == page
                 and literal(condition) in literal(c.get("content", ""))
-                for c in batch + (preceding or [])
+                for c in [source_chunk] + batch + (preceding or [])
             )
             # A citação já comprovada pode ser a condição literal. Isso evita
             # rejeitar a regra apenas porque o modelo parafraseou esse campo.
@@ -1517,6 +1530,20 @@ Regras:
             return last_parsed, verified
         raise last_error or RuntimeError("Lote sem JSON válido")
 
+    @staticmethod
+    def _extraction_text_cut(text: str) -> int | None:
+        """Prefere fronteiras de frases; não elimina caracteres entre partes."""
+        if len(text) <= 80:
+            return None
+        lower, upper = len(text) // 3, len(text) * 2 // 3
+        middle = len(text) // 2
+        for pattern in (r"\n\s*\n", r"[.;!?]\s+", r"\s+"):
+            boundaries = [match.end() for match in re.finditer(pattern, text)
+                          if lower <= match.end() <= upper]
+            if boundaries:
+                return min(boundaries, key=lambda point: abs(point - middle))
+        return middle
+
     def _extract_budgeted_batch(self, batch: list[dict], system_msg,
                                 preceding: list[dict], checkpoint: dict,
                                 batch_number: int) -> tuple[dict, dict]:
@@ -1545,27 +1572,77 @@ Regras:
                         sources[topic].append(item)
             return parsed, sources
 
+        def walk_text(index, lo, hi, context, known_error=None, depth=0):
+            # Os offsets são relativos ao chunk original e integram a chave do
+            # checkpoint. Mudar o tamanho da resposta não invalida partes salvas.
+            key = f"{index}:{index + 1}/text:{lo}:{hi}"
+            saved = cache.get(key, {})
+            if "parsed" in saved and "sources" in saved:
+                logger.info("Lote %s: reutilizando subtrecho %s salvo", batch_number, key)
+                return saved["parsed"], saved["sources"]
+            original = batch[index]
+            text = original["content"][lo:hi]
+            if "split_at" not in saved:
+                error = known_error
+                if error is None:
+                    fragment = {**original, "content": text,
+                                "metadata": {**original.get("metadata", {}),
+                                             "source_char_start": lo, "source_char_end": hi}}
+                    fragment_context = list(context)
+                    if lo:
+                        fragment_context.append({
+                            **original, "content": original["content"][max(0, lo - 900):lo],
+                            "metadata": {**original.get("metadata", {}),
+                                         "source_char_start": max(0, lo - 900),
+                                         "source_char_end": lo},
+                        })
+                    try:
+                        result = self._extract_verified_batch([fragment], system_msg, fragment_context)
+                    except GroqRequestTooLarge as failure:
+                        error = failure
+                    else:
+                        cache[key] = {"parsed": result[0], "sources": result[1]}
+                        self._save_checkpoint(checkpoint)
+                        return result
+                cut = self._extraction_text_cut(text)
+                if cut is None or depth >= 8:
+                    raise GroqRequestTooLarge(
+                        f"Não foi possível concluir a extração de um subtrecho de {len(text)} "
+                        "caracteres dentro do orçamento de tokens. As partes concluídas "
+                        "continuam salvas no checkpoint. " + str(error)
+                    ) from error
+                saved = cache[key] = {"split_at": lo + cut}
+                self._save_checkpoint(checkpoint)
+                logger.warning("Lote %s: subdividindo texto do trecho %s, página %s, "
+                               "caracteres %s:%s (resposta não coube no orçamento)",
+                               batch_number, original.get("metadata", {}).get("chunk_id", index),
+                               original.get("metadata", {}).get("page", "?"), lo, hi)
+            cut = saved["split_at"]
+            return merge(walk_text(index, lo, cut, context, depth=depth + 1),
+                         walk_text(index, cut, hi, context, depth=depth + 1))
+
         def walk(start, end):
             key = f"{start}:{end}"
             saved = cache.get(key, {})
             if "parsed" in saved and "sources" in saved:
                 logger.info("Lote %s: reutilizando parte %s salva", batch_number, key)
                 return saved["parsed"], saved["sources"]
+            context = preceding
+            if start or end != len(batch):
+                page = batch[start].get("metadata", {}).get("page")
+                context = [chunk for chunk in preceding + batch[:start]
+                           if chunk.get("metadata", {}).get("page") == page][-2:]
+            if saved.get("text_split"):
+                return walk_text(start, 0, len(batch[start]["content"]), context)
             if not saved.get("split"):
-                context = preceding
-                if start or end != len(batch):
-                    page = batch[start].get("metadata", {}).get("page")
-                    context = [chunk for chunk in preceding + batch[:start]
-                               if chunk.get("metadata", {}).get("page") == page][-2:]
                 try:
                     result = self._extract_verified_batch(batch[start:end], system_msg, context)
                 except GroqRequestTooLarge as error:
                     if end - start <= 1:
-                        raise GroqRequestTooLarge(
-                            "Mesmo um trecho excedeu o limite disponível de tokens. "
-                            "As partes anteriores continuam salvas no checkpoint. "
-                            + str(error)
-                        ) from error
+                        cache[key] = {"text_split": True}
+                        self._save_checkpoint(checkpoint)
+                        return walk_text(start, 0, len(batch[start]["content"]), context,
+                                         known_error=error)
                     cache[key] = {"split": True}
                     self._save_checkpoint(checkpoint)
                     logger.warning("Lote %s: dividindo parte %s para caber na cota de tokens",
