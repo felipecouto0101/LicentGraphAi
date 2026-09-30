@@ -22,6 +22,7 @@ class Node1ReaderChunker:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         chunk_by_sections: bool = True,
+        preserve_document_structure: bool = False,
     ):
         """
         Inicializa o Nó 1.
@@ -36,6 +37,7 @@ class Node1ReaderChunker:
             chunk_size=chunk_size, chunk_overlap=chunk_overlap
         )
         self.chunk_by_sections = chunk_by_sections
+        self.preserve_document_structure = preserve_document_structure
 
         logger.info(
             f"Nó 1 inicializado: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}"
@@ -60,7 +62,8 @@ class Node1ReaderChunker:
 
         # Extrai o texto
         logger.info("Extraindo texto do PDF...")
-        full_text = self.pdf_reader.load_pdf(pdf_path)
+        full_text = (self.pdf_reader.load_pdf(pdf_path, preserve_lines=True)
+                     if self.preserve_document_structure else self.pdf_reader.load_pdf(pdf_path))
         page_count = self.pdf_reader.get_page_count()
 
         logger.info(
@@ -76,7 +79,16 @@ class Node1ReaderChunker:
             "bens": [], "prazos": [], "exigencias_tecnicas": [],
             "documentacao": [], "outros": [],
         }
-        for page_number, page_text in enumerate(pages, 1):
+        if self.preserve_document_structure:
+            from .topic_map import split_topic_sections
+            for block in split_topic_sections(pages):
+                for chunk in self.text_chunker.create_document_chunks(block["content"], {
+                    **(metadata or {}), "page": block["page"],
+                    "topic_title": block["topic_title"], "subtopic_title": block["subtopic_title"],
+                }):
+                    chunk["metadata"]["chunk_id"] = len(all_chunks)
+                    all_chunks.append(chunk)
+        for page_number, page_text in enumerate(pages if not self.preserve_document_structure else [], 1):
             if not page_text.strip():
                 continue
             if self.chunk_by_sections:
@@ -107,10 +119,11 @@ class Node1ReaderChunker:
             "page_count": page_count,
             "chunks": all_chunks,
             "total_chunks": len(all_chunks),
-            "processing_method": "by_sections" if self.chunk_by_sections else "standard",
+            "processing_method": ("document_structure" if self.preserve_document_structure
+                                  else "by_sections" if self.chunk_by_sections else "standard"),
             "metadata": metadata or {},
         }
-        if self.chunk_by_sections:
+        if self.chunk_by_sections and not self.preserve_document_structure:
             result["chunks_by_section"] = chunks_by_section
 
         logger.info(f"Processamento concluído: {result['total_chunks']} chunks gerados")
