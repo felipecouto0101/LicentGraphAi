@@ -13,6 +13,7 @@ from typing import Optional
 import logging
 import json
 from dotenv import load_dotenv
+from app.rag.gemini_client import provider_name, validate_topic_configuration, GeminiTopicClient
 
 load_dotenv()
 
@@ -53,14 +54,23 @@ def _run_organization_job(job_id: str):
         session = _documents[job_id]
     try:
         if is_mock_mode():
-            raise ValueError("A organização exige NODE3_MOCK_MODE=false e uma chave Groq válida.")
-        validate_analysis_configuration()
-        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
-        from langchain_core.messages import SystemMessage, HumanMessage
+            raise ValueError("A organização exige NODE3_MOCK_MODE=false e uma chave válida do provedor selecionado.")
+        provider = provider_name()
+        if provider == "gemini":
+            validate_topic_configuration()
+        else:
+            validate_analysis_configuration()
         with session["lock"]:
             if session["llm"] is None:
-                session["llm"] = Node3RequirementAnalyzer(mock_mode=False)
+                if provider == "gemini":
+                    session["llm"] = GeminiTopicClient(progress=lambda **kw: _update_progress(job_id, **kw))
+                else:
+                    from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+                    session["llm"] = Node3RequirementAnalyzer(mock_mode=False)
             def invoke(system, payload):
+                if provider == "gemini":
+                    return session["llm"].invoke(system, payload)
+                from langchain_core.messages import SystemMessage, HumanMessage
                 response = session["llm"]._invoke_with_rotation([
                     SystemMessage(content=system),
                     HumanMessage(content=json.dumps(payload, ensure_ascii=False))])
@@ -71,7 +81,9 @@ def _run_organization_job(job_id: str):
             organized = organize_topic_map(
                 session["structural_topics"], session["chunks"], invoke,
                 cache=session["organization_cache"],
-                progress=lambda **kw: _update_progress(job_id, **kw), on_partial=publish_partial)
+                progress=lambda **kw: _update_progress(job_id, **kw), on_partial=publish_partial,
+                batch_max_chars=16000 if provider == "gemini" else 8000,
+                batch_max_entries=12 if provider == "gemini" else 8)
             if all_chunk_ids(organized) != all_chunk_ids(session["structural_topics"]):
                 raise ValueError("A organização perdeu referências do PDF.")
             session["topics"] = organized
@@ -188,7 +200,10 @@ async def root():
 @app.get("/status")
 async def get_status():
     try:
-        validate_analysis_configuration()
+        if provider_name() == "gemini":
+            validate_topic_configuration()
+        else:
+            validate_analysis_configuration()
         configuration_error = None
     except ValueError as exc:
         configuration_error = str(exc)
@@ -197,6 +212,7 @@ async def get_status():
         "ready": configuration_error is None,
         "configuration_error": configuration_error,
         "service": "LicitGraphAi API",
+        "topic_provider": provider_name() if configuration_error is None else None,
         "version": "1.0.0",
         "nodes": ["PDF", "índice estrutural", "organização de assuntos com IA"],
         "orchestration": "Mapa de assuntos; LangGraph disponível no fluxo completo",
