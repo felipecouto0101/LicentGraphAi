@@ -63,11 +63,11 @@ class OrganizerTests(unittest.TestCase):
             return self.reply(system, payload)
         organize_topic_map(self.topics, self.chunks, resume, cache=cache)
         self.assertEqual(len(resumed), 2)
-        self.assertEqual(resumed[0]["passages"][0]["id"], "c8-0")
+        self.assertEqual(resumed[0]["passages"][0]["lines"][0]["text"], "Texto completo do documento 8")
         self.chunks[0]["content"] += " Informação adicional."
         resumed.clear()
         organize_topic_map(self.topics, self.chunks, resume, cache=cache)
-        self.assertEqual(resumed[0]["passages"][0]["id"], "c0-0")
+        self.assertEqual(resumed[0]["passages"][0]["lines"][0]["text"], "Texto completo do documento 0 Informação adicional.")
 
     def test_duplicate_grouping_ids_rejected(self):
         def invoke(system, payload):
@@ -133,7 +133,7 @@ class OrganizerTests(unittest.TestCase):
     def test_final_theme_consolidation_keeps_all_evidence(self):
         def invoke(system, payload):
             if "passages" in payload:
-                return {"topics": [{"theme": "Grupo " + e["id"], "title": "Assunto " + e["id"],
+                return {"topics": [{"theme": "Grupo " + e["lines"][0]["text"], "title": "Assunto " + e["lines"][0]["text"],
                     "sources": [{"id": e["id"], "lines": [1]}]} for e in payload["passages"]]}
             if all(e["theme"] == "Temas do documento" for e in payload["topics"]):
                 return {"themes": [{"title": "Assuntos relacionados", "subtopics": [
@@ -166,7 +166,7 @@ class OrganizerTests(unittest.TestCase):
         self.chunks = [{"content": "Conteúdo integral do edital. " * 20,
                         "metadata": {"page": 1, "chunk_id": 0}}]
         def invoke(system, payload):
-            if "passages" in payload and sum(len(line) for line in payload["passages"][0]["lines"]) > 320:
+            if "passages" in payload and sum(len(line["text"]) for line in payload["passages"][0]["lines"]) > 320:
                 raise GroqOutputTruncated()
             return self.reply(system, payload)
         result = organize_topic_map(self.topics, self.chunks, invoke)
@@ -174,6 +174,32 @@ class OrganizerTests(unittest.TestCase):
         sub = result[0]["subtopics"][0]
         self.assertEqual(len(sub["source_ids"]), 2)
         self.assertTrue(all(e["quote"] in self.chunks[0]["content"] for e in sub["evidence"]))
+
+    def test_partial_subtopics_published_before_later_failure(self):
+        partial, calls = [], []
+        def invoke(system, payload):
+            calls.append(payload)
+            if len(calls) == 2:
+                raise RuntimeError("Cota indisponível")
+            self.assertEqual(payload["passages"][0]["id"], "p1")
+            self.assertEqual(payload["passages"][0]["lines"][0]["number"], 1)
+            return self.reply(system, payload)
+        with self.assertRaises(RuntimeError):
+            organize_topic_map(self.topics, self.chunks, invoke, on_partial=partial.append)
+        self.assertTrue(partial)
+        self.assertEqual(all_chunk_ids(partial[-1]), set(range(8)))
+        self.assertEqual(partial[-1][0]["subtopics"][0]["title"], "Condições para inscrição")
+
+    def test_numeric_strings_and_duplicate_lines_normalize_without_guessing(self):
+        def invoke(system, payload):
+            result = self.reply(system, payload)
+            if "passages" in payload:
+                for source in result["topics"][0]["sources"]:
+                    source["lines"] = ["1", 1]
+            return result
+        result = organize_topic_map(self.topics, self.chunks, invoke)
+        self.assertEqual(all_chunk_ids(result), set(range(16)))
+        self.assertEqual(len(result[0]["subtopics"][0]["evidence"]), 16)
 
     def test_annex_mentions_are_not_treated_as_present_annexes(self):
         chunks = [{"content": "Ver Anexos I e II deste edital. Cronograma no Anexo III.", "metadata": {"page": 1}},
