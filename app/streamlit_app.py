@@ -74,6 +74,18 @@ def _poll(api_url, job_id):
         done = progress.get("completed", 0)
         if total:
             st.progress(min(done / total, 1), text=f"{done} de {total} etapas de organização concluídas")
+        activity = progress.get("activity_message")
+        if activity:
+            if progress.get("activity") in {"waiting", "retrying", "repairing", "splitting"}:
+                st.warning(activity)
+            else:
+                st.info(activity)
+        wait_until = progress.get("wait_until")
+        if isinstance(wait_until, (int, float)):
+            seconds = max(0, int(wait_until - time.time() + 0.999))
+            st.caption(f"Próxima tentativa em aproximadamente {seconds} segundos.")
+        if progress.get("provider"):
+            st.caption(f"Provedor: {progress['provider']} · Modelo: {progress.get('model', '')}")
         st.caption("A IA organiza apenas nomes e agrupamentos. As cotas da API podem exigir pausas entre chamadas.")
     time.sleep(3)
     st.rerun()
@@ -224,7 +236,7 @@ def main():
             response = requests.get(f"{api_url}/status", timeout=3)
             status = response.json()
             if not status.get("ready", True) or status.get("analysis_mode") == "demo":
-                st.warning("Configure a chave Groq e desative o modo demonstração para organizar os assuntos.")
+                st.warning("Configure a chave do provedor selecionado e desative o modo demonstração para organizar os assuntos.")
         except (requests.RequestException, ValueError):
             st.warning("API indisponível. Inicie o backend para enviar um PDF.")
         file = st.file_uploader("Enviar edital", type="pdf")
