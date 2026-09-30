@@ -63,12 +63,35 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn('\n\na) à exclusão', blocks[0]['text'])
         self.assertNotIn('16.25.1', blocks[0]['text'])
 
-    def test_pages_are_never_merged_and_unconfirmed_continuation_is_flagged(self):
+    def test_confirmed_continuation_keeps_both_page_references(self):
         topics = [{'subtopics': [{'evidence': [row('2.1 Texto que continua'), row('na outra página.', page=2)]}]}]
         SourceRecovery(['2.1 Texto que continua', 'na outra página.'], []).enrich(topics)
         blocks = topics[0]['subtopics'][0]['source_blocks']
-        self.assertEqual([b['page'] for b in blocks], [1, 2])
-        self.assertTrue(blocks[0]['continuation_pending'])
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]['pages'], [1, 2])
+        self.assertEqual(blocks[0]['item'], '2.1')
+        self.assertEqual(blocks[0]['text'], '2.1 Texto que continua na outra página.')
+
+    def test_contact_continuation_restores_beginning_and_excludes_footer_next_item(self):
+        pages = ["22.12 O candidato deverá solicitar atualização por e-mail, até a homologação do\nEdital X Página 1 de 2",
+                 "certame. Em caso de dúvida, ligue para o atendimento.\n22.12.1 O órgão não se responsabiliza pelo endereço incorreto."]
+        topics = [{"subtopics": [{"pages": [2], "evidence": [row("certame. Em caso de dúvida", page=2),
+            row("22.12 O candidato", page=1)]}]}]
+        SourceRecovery(pages, []).enrich(topics)
+        blocks = topics[0]["subtopics"][0]["source_blocks"]
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["pages"], [1, 2])
+        self.assertTrue(blocks[0]["text"].startswith("22.12 O candidato"))
+        self.assertIn("homologação do certame.", blocks[0]["text"])
+        self.assertNotIn("Edital X", blocks[0]["text"])
+        self.assertNotIn("22.12.1", blocks[0]["text"])
+
+    def test_independent_uppercase_paragraph_is_not_joined_to_previous_page(self):
+        topics = [{"subtopics": [{"evidence": [row("2.1 Texto interrompido", page=1), row("Novo assunto.", page=2)]}]}]
+        SourceRecovery(["2.1 Texto interrompido", "Novo assunto."], []).enrich(topics)
+        blocks = topics[0]["subtopics"][0]["source_blocks"]
+        self.assertEqual([b["page"] for b in blocks], [1, 2])
+        self.assertTrue(blocks[0]["continuation_pending"])
 
     def test_missing_page_or_quote_preserves_verified_selection(self):
         blocks = recover('Outro texto.', [row('Regra selecionada.')])
