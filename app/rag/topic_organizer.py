@@ -6,7 +6,7 @@ import re
 import unicodedata
 
 logger = logging.getLogger(__name__)
-VERSION = 3
+VERSION = 4
 
 
 def _key(title):
@@ -70,6 +70,7 @@ def _validate_extraction(parsed, batch):
     if not isinstance(topics, list) or not topics:
         raise ValueError("A IA não retornou assuntos.")
     entries = {e["id"]: e for e in batch}
+    aliases = {f"p{i + 1}": e for i, e in enumerate(batch)}
     covered, result = set(), []
     for topic in topics:
         if not isinstance(topic, dict):
@@ -82,13 +83,19 @@ def _validate_extraction(parsed, batch):
         for source in sources:
             if not isinstance(source, dict):
                 raise ValueError("Fonte inválida.")
-            entry = entries.get(source.get("id")) if isinstance(source.get("id"), str) else None
+            source_id = source.get("id")
+            entry = aliases.get(source_id, entries.get(source_id)) if isinstance(source_id, str) else None
             lines = _source_lines(entry["text"]) if entry else []
             chosen = source.get("lines")
-            if (entry is None or not isinstance(chosen, list) or not chosen
-                    or len(chosen) > 3 or not all(type(n) is int and 1 <= n <= len(lines) for n in chosen)
-                    or len(chosen) != len(set(chosen))):
-                raise ValueError("A IA indicou linhas ou IDs de fonte inexistentes.")
+            if entry is None:
+                raise ValueError(f"ID de fonte desconhecido: {source_id!r}. IDs permitidos: {list(aliases)}")
+            if not isinstance(chosen, list) or not chosen:
+                raise ValueError(f"Fonte {source_id}: lines deve ser uma lista não vazia.")
+            # Normaliza apenas representação inequívoca; não inventa ou ajusta índices.
+            normalized = [int(n) if isinstance(n, str) and n.isascii() and n.isdigit() else n for n in chosen]
+            if not all(type(n) is int and 1 <= n <= len(lines) for n in normalized):
+                raise ValueError(f"Fonte {source_id}: linhas {chosen!r} inválidas; intervalo permitido 1–{len(lines)}.")
+            chosen = list(dict.fromkeys(normalized))
             covered.add(entry["id"])
             for number in chosen:
                 evidence = {"source_id": entry["id"], "chunk_id": entry["chunk_id"],
@@ -110,6 +117,23 @@ def _merge_topics(topics):
         item = output.setdefault(key, {"title": topic["title"], "theme": topic["theme"], "evidence": []})
         item["evidence"].extend(e for e in topic["evidence"] if e not in item["evidence"])
     return list(output.values())
+
+
+def _partial_map(topics):
+    """Somente subtemas já validados; nunca apresenta o índice como mapa gerado."""
+    themes = {}
+    for topic in _merge_topics(topics):
+        key = _key(topic["theme"])
+        theme = themes.setdefault(key, {"id": f"partial-theme-{len(themes) + 1}",
+                                       "title": topic["theme"], "subtopics": []})
+        evidence = topic["evidence"]
+        theme["subtopics"].append({"id": f"{theme['id']}-sub-{len(theme['subtopics']) + 1}",
+            "title": topic["title"], "pages": sorted({e["page"] for e in evidence if e["page"] is not None}),
+            "chunk_ids": list(dict.fromkeys(e["chunk_id"] for e in evidence)),
+            "source_ids": list(dict.fromkeys(e["source_id"] for e in evidence)),
+            "source_titles": list(dict.fromkeys(title for e in evidence for title in e["source_titles"])),
+            "evidence": evidence})
+    return list(themes.values())
 
 
 def _validate_grouping(parsed, candidates):
@@ -141,7 +165,7 @@ def _validate_grouping(parsed, candidates):
     return result
 
 
-def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None):
+def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None, on_partial=None):
     """Retorna mapa com evidências; cache de lotes validados na sessão."""
     cache = cache if cache is not None else {}
     entries = source_catalog(topic_map, chunks)
@@ -155,26 +179,31 @@ def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None):
         "Separe assuntos diferentes dentro da mesma seção (por exemplo, prazo e pagamento). "
         "Reúna cláusulas sobre o mesmo assunto sem transformar cada regra em um tópico. "
         "Não infira direitos, consequências ou condições ausentes. O nome deve descrever as fontes. "
-        "Os textos estão em listas de linhas. Selecione de 1 a 3 números de linha por fonte, "
-        "contando a partir de 1 dentro de cada trecho. Não escreva nem reescreva citações. "
+        "Cada trecho tem ID curto p1, p2 etc. e linhas com number e text. "
+        "Selecione os números explícitos de 1 a 3 linhas relevantes por fonte. "
+        "Copie o ID recebido; não use páginas, índices globais ou invente IDs. Não escreva citações. "
         "Vincule somente os trechos que realmente tratam daquele assunto; nunca uma seção inteira por herança. "
         "Cubra cada ID recebido com ao menos uma fonte. Trechos de cabeçalho/tabela também precisam ser identificados. "
         'Retorne apenas JSON: {"topics":[{"theme":"nome", "title":"subtema", '
-        '"sources":[{"id":"id", "lines":[1]}]}.'
+        '"sources":[{"id":"p1", "lines":[1]}]}]}.'
     )
     def extract(batch):
-        payload = {"passages": [{"id": e["id"], "page": e["page"], "section": e["section"],
-                                  "lines": _source_lines(e["text"])} for e in batch]}
+        payload = {"passages": [{"id": f"p{i + 1}", "origin_id": e["id"], "page": e["page"], "section": e["section"],
+                                  "lines": [{"number": n + 1, "text": line}
+                                            for n, line in enumerate(_source_lines(e["text"]))]}
+                                for i, e in enumerate(batch)]}
         key = _cache_key("extract", payload)
         if key in cache:
             return cache[key]
         try:
             try:
-                result = _validate_extraction(invoke(prompt, payload), batch)
+                sent = {"passages": [{k: v for k, v in entry.items() if k != "origin_id"}
+                                      for entry in payload["passages"]]}
+                result = _validate_extraction(invoke(prompt, sent), batch)
             except ValueError as exc:
                 # Uma correção explícita de formato/referências; depois reduz o lote.
                 logger.warning("Identificação: referência/formato inválido; tentando uma correção: %s", exc)
-                corrected = {**payload, "validation_error": str(exc)}
+                corrected = {**sent, "validation_error": str(exc)}
                 result = _validate_extraction(invoke(prompt + " Corrija o erro de validação informado; "
                     "use exclusivamente IDs e números de linhas existentes.", corrected), batch)
         except Exception as exc:
@@ -195,6 +224,10 @@ def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None):
             else:
                 raise
         cache[key] = result
+        if on_partial:
+            completed = [topic for cache_key, saved in cache.items()
+                         if cache_key[0] == VERSION and cache_key[1] == "extract" for topic in saved]
+            on_partial(_partial_map(completed))
         return result
 
     topics = []
