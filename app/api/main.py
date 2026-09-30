@@ -62,7 +62,7 @@ def _run_organization_job(job_id: str):
         else:
             validate_analysis_configuration()
         with session["lock"]:
-            recovery = SourceRecovery(session.get("pages_text", []), session["chunks"])
+            recovery = SourceRecovery(session.get("pages_text", []), session["chunks"], session.get("pages_tables", []))
             if session["llm"] is None:
                 if provider == "gemini":
                     session["llm"] = GeminiTopicClient(progress=lambda **kw: _update_progress(job_id, **kw))
@@ -123,6 +123,7 @@ def _run_topic_job(job_id: str, file_path: str):
             raise ValueError("O PDF não contém texto extraível.")
         topic_map = build_topic_map(chunks)
         session = {"chunks": chunks, "pages_text": parsed.get("pages_text", []),
+                   "pages_tables": parsed.get("pages_tables", []),
                    "topics": topic_map, "structural_topics": topic_map,
                    "organization_cache": {}, "llm": None, "lock": threading.Lock()}
         with _jobs_lock:
