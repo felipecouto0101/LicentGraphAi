@@ -3,6 +3,7 @@ import time
 import re
 import html
 from app.rag.source_display import evidence_blocks
+from app.rag.pdf_tables import table_html
 import requests
 import streamlit as st
 
@@ -148,6 +149,11 @@ def _subtopic_card(sub, organized):
                         if block.get("item"):
                             label += f" · item {block['item']}"
                         st.caption(label)
+                        if block.get("table"):
+                            st.subheader(block["table"]["title"])
+                            st.caption("Tabela extraída do PDF; células mescladas preservadas quando identificadas.")
+                            st.markdown(table_html(block["table"]), unsafe_allow_html=True)
+                            continue
                         if block.get("expanded"):
                             st.caption("Contexto recuperado do texto original do PDF.")
                         elif block.get("context_status") == "selected_only":
