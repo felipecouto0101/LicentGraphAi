@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from app.rag.topic_map import build_topic_map, all_chunk_ids, merge_similar_themes
+from app.rag.topic_map import build_topic_map, all_chunk_ids, merge_similar_themes, split_topic_sections
 
 
 class FakeEncoder:
@@ -35,6 +35,32 @@ class TopicMapTests(unittest.TestCase):
                        if sub["title"] == "Qualificação técnica")
         self.assertEqual(tecnico["pages"], [3, 4])
         self.assertEqual(tecnico["chunk_ids"], [2, 3])
+
+    def test_sections_before_chunks_preserve_wrapped_headings_and_all_text(self):
+        pages = ["Capa\nSumário\n1. DO OBJETO ........ 2\n2. DA PROPOSTA E DOS\nDOCUMENTOS ........ 3",
+                 "Cabeçalho\n1. DO OBJETO\n1.1. A contratada deve executar os serviços.\n2. DA PROPOSTA E DOS\nDOCUMENTOS\n2.1 PREÇOS E VALORES\n2.1.1. O preço será global.",
+                 "Continuação da proposta.\n3 DOS RECURSOS\nTexto sobre recursos.\nANEXO II- MINUTA DE CONTRATO\nCLÁUSULA PRIMEIRA – DO OBJETO\n1.1. Obra pública."]
+        blocks = split_topic_sections(pages)
+        self.assertEqual("\n".join(b["content"] for b in blocks).splitlines(),
+                         [line for page in pages for line in page.splitlines()])
+        chunks = [{"content": b["content"], "metadata": {
+            "page": b["page"], "chunk_id": i, "topic_title": b["topic_title"],
+            "subtopic_title": b["subtopic_title"]}} for i, b in enumerate(blocks)]
+        topics = build_topic_map(chunks)
+        self.assertEqual(all_chunk_ids(topics), set(range(len(chunks))))
+        self.assertEqual([t["title"] for t in topics], ["Introdução e dados iniciais",
+            "Do Objeto", "Da Proposta E Dos Documentos", "Dos Recursos", "Anexo Ii- Minuta De Contrato"])
+        self.assertEqual(topics[2]["subtopics"][1]["pages"], [2, 3])
+        self.assertEqual(topics[2]["subtopics"][1]["title"], "Preços E Valores")
+        self.assertEqual(topics[-1]["subtopics"][1]["title"], "Do Objeto")
+        self.assertFalse(any("deve executar" in t["title"] for t in topics))
+
+    def test_reader_preserves_lines_only_when_requested(self):
+        from app.rag.pdf_reader import PDFReader
+        reader = PDFReader()
+        text = "1. DO OBJETO\nTexto da cláusula.\n2. DA PROPOSTA"
+        self.assertIn("\n", reader._clean_text(text, preserve_lines=True))
+        self.assertNotIn("\n", reader._clean_text(text))
 
     def test_semantic_grouping_keeps_distinct_subtopics_and_sources(self):
         topics = [
