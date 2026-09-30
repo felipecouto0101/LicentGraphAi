@@ -93,3 +93,20 @@ python -m py_compile app/rag/topic_map.py app/rag/topic_organizer.py app/api/mai
 ```
 
 Testes simulam respostas da IA e cobrem texto completo, páginas específicas por subtema, referências de linha inválidas, omissões, consolidação de sinônimos, divisão após truncamento, reaproveitamento e invalidação de cache, referências a anexos e fluxo da API. Execução com Groq e avaliação visual do Streamlit precisam das dependências completas e chave configuradas.
+
+### Contas Groq independentes
+
+Para usar três chaves de organizações distintas, configure no `.env`:
+
+```dotenv
+GROQ_API_KEY=sua_primeira_chave
+GROQ_API_KEY_2=sua_segunda_chave
+GROQ_API_KEY_3=sua_terceira_chave
+GROQ_INDEPENDENT_ACCOUNTS=true
+```
+
+Reinicie o backend após alterar a configuração. O cliente mantém a conta atual enquanto disponível; quando ela entra em espera por RPM, tokens ou 429, procura outra disponível antes de aguardar. Cotas, janelas de requisições e teto de saída são separados por chave dentro de cada cliente. Chaves repetidas são descartadas. Os logs identificam a conta pelo número, sem exibir credenciais.
+
+O padrão de `GROQ_INDEPENDENT_ACCOUNTS` é `false`: chaves da mesma organização compartilham os limites da Groq e não devem ativar essa opção. O controle é local ao cliente e não coordena processos ou aplicações externos usando as mesmas contas. Todas as contas indisponíveis, falhas persistentes ou pedidos grandes demais continuam interrompendo com erro recuperável. Trocar contas não corrige citações inválidas nem respostas truncadas. Não há garantia de aceleração de três vezes.
+
+Testes do escalonador (sem chamadas à API): `python -m pytest tests/test_groq_account_scheduler.py -q`.
