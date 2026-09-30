@@ -1,161 +1,73 @@
 # LicentGraphAi
 
-Aplicação para organizar informações de editais em PDF. Lê o arquivo, extrai itens com a Groq, apresenta explicações em linguagem simples e separa documentos de participação, atividades da execução e anexos de consulta. **O resultado é uma análise automática para conferência, não substitui a leitura do edital.**
+Explore editais em PDF por meio de um **mapa de temas e subtemas**. O sistema lê as páginas, preserva suas referências, indexa os trechos e apresenta o mapa sem gerar centenas de explicações antecipadamente. Abra um assunto para pedir uma explicação ou faça uma pergunta livre ao edital.
 
-## Arquitetura e tecnologias
+## Como usar
 
-O processamento é um fluxo **linear de quatro nós** definido em `app/rag/langgraph_workflow.py`. O **LangGraph** usa `StateGraph` para executar os nós na ordem PDF → embeddings → análise → checklist e compartilhar entre eles o estado com os trechos, a referência à coleção vetorial, a análise, o checklist e eventuais erros. Neste projeto, o grafo não implementa agentes autônomos nem ramificações condicionais. A retomada descrita abaixo é implementada pelo nó 3 com arquivos JSON locais, e não pelo sistema de checkpoints do LangGraph.
+1. Envie um PDF com texto extraível e clique em **Criar mapa de assuntos**.
+2. Navegue pelos temas e subtemas ou procure pelo nome de um assunto. A página física do PDF aparece ao lado de cada subtema.
+3. Clique em **Explicar este assunto** quando quiser uma interpretação em linguagem simples, com citações literais verificadas. A conversa também aceita perguntas livres.
+4. Quando um cabeçalho original for pouco claro, clique em **Organizar nomes com IA** para sugerir nomes mais amigáveis dentro daquele tema. O título do PDF continua disponível e os IDs, trechos e páginas não mudam.
 
-| Tecnologia | Papel no projeto |
-| --- | --- |
-| Python | Linguagem da aplicação e do pipeline. |
-| LangGraph | Orquestra os quatro nós e transmite o estado entre eles. |
-| LangChain (`langchain-groq` e `langchain-core`) | Fornece `ChatGroq` e as mensagens `SystemMessage`/`HumanMessage` usadas nas chamadas aos modelos da Groq. A extração e a busca são implementadas nos nós do projeto. |
-| Groq | Executa as chamadas de LLM para extração e redação; o modelo padrão nos nós 3 e 4 é `qwen/qwen3.8-27b`. |
-| `pdfplumber` | Lê o texto do PDF, que depois é dividido em trechos com referência à página. |
-| `sentence-transformers` | Gera embeddings dos trechos com `all-MiniLM-L6-v2` por padrão. |
-| ChromaDB | Armazena os vetores e permite recuperar trechos semelhantes para a consulta RAG. |
-| FastAPI e Uvicorn | Expõem a API de upload, consulta de jobs e status do serviço. |
-| Streamlit | Exibe o formulário de upload, o progresso e as abas do resultado. |
-| `python-dotenv` e pytest | Carregam a configuração `.env` e executam os testes, respectivamente. |
+O mapa é um índice automático, não uma auditoria completa das exigências. Ele inclui todos os trechos de texto que o leitor conseguiu extrair do PDF, mas um título pode estar mal formatado, e PDFs digitalizados podem exigir OCR. A resposta do chat traz fontes para revisão; encontrar uma frase literal na página não prova, por si só, que toda interpretação da IA está correta.
 
-O **RAG** aqui combina a indexação dos trechos do edital no ChromaDB com a recuperação por similaridade durante a análise. O nó 3 também percorre os trechos em lotes para extrair informações; a recuperação vetorial não substitui essa leitura em lotes.
+## Instalação
 
-## Início rápido
-
-Requer Python 3.11 ou 3.12 e uma chave da Groq para análise real. Na raiz do projeto, no PowerShell:
+Requer Python 3.11 ou 3.12. Na raiz do projeto, crie e ative um ambiente virtual e instale as dependências:
 
 ```powershell
-git clone https://github.com/felipecouto0101/LicentGraphAi.git
-cd LicentGraphAi
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Edite o `.env` e substitua `your_groq_api_key_here` pela sua chave em `GROQ_API_KEY`. Depois inicie os dois serviços:
+Para gerar explicações, configure `GROQ_API_KEY` no `.env` e mantenha `NODE3_MOCK_MODE=false`. O mapa inicial pode ser preparado sem uma chave; as perguntas e a organização opcional de nomes precisam da Groq real. Inicie:
 
 ```powershell
 python start_app.py
 ```
 
-Abra **http://localhost:8501** para usar a interface. A documentação da API fica em **http://127.0.0.1:8002/docs**. Na primeira análise, o carregamento do modelo de embeddings pode demorar; a API não precisa carregar esse modelo para responder a `/status`.
-
-Se preferir terminais separados, inicie a API e depois o Streamlit:
+Interface: **http://localhost:8501**. API: **http://127.0.0.1:8002/docs**. Em terminais separados:
 
 ```powershell
 python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002
 python -m streamlit run app/streamlit_app.py
 ```
 
-No Linux ou macOS, ative o ambiente com `source .venv/bin/activate` e crie o `.env` com `cp .env.example .env`.
+## Fluxo e tecnologias
 
-Se o iniciador indicar que a API encerrou ou não respondeu, execute a API sozinha para ver o erro original no terminal:
+| Tecnologia | Função |
+| --- | --- |
+| `pdfplumber` | Extrai o texto do PDF e associa trechos à página física. |
+| Sentence Transformers (`all-MiniLM-L6-v2`) | Gera embeddings dos trechos e permite aproximar títulos de assuntos semelhantes. |
+| ChromaDB | Armazena os embeddings e recupera trechos relacionados a perguntas livres. |
+| Groq + Qwen | Explica um assunto solicitado, responde perguntas e opcionalmente sugere nomes mais claros. |
+| LangChain | Fornece o cliente `ChatGroq` e as mensagens usadas nas chamadas à Groq. |
+| FastAPI | Inicia a preparação em background e expõe o mapa e o chat. |
+| Streamlit | Exibe o mapa, busca de assuntos, páginas e conversa. |
+| LangGraph | Permanece no código do fluxo completo anterior (`app/rag/langgraph_workflow.py`); o fluxo rápido do mapa usa apenas leitura, indexação e consultas sob demanda. |
 
-```powershell
-python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002 --log-level debug
-```
+O índice inicial é construído a partir de cabeçalhos observáveis e trechos do PDF. Títulos semanticamente próximos podem ser agrupados, com seus subtemas e fontes preservados. Títulos genéricos ou sem cabeçalho permanecem visíveis para evitar descartar texto. **A Groq não é chamada durante a criação do mapa.** Um clique para organizar nomes usa uma chamada apenas para os nomes daquele tema; a explicação usa uma chamada sobre trechos recuperados quando solicitada.
 
-Verifique também se o Python ativo é o do ambiente virtual (`python -c "import sys; print(sys.executable)"`). Corrija a causa mostrada no traceback antes de repetir `python start_app.py`.
+O fluxo LangGraph completo anterior permanece acessível pela API em `POST /analyze/full`, fora da interface do mapa. Ele mantém sua extração, checklist e checkpoints antigos.
 
-## Configuração
+O endpoint `POST /analyze/upload` retorna um `job_id`; `GET /job/{job_id}` informa progresso e devolve `result.topic_map`. `POST /job/{job_id}/ask` aceita `question`, `topic_id` opcional e um histórico curto. `POST /job/{job_id}/organize` aceita `theme_id`. Os jobs e os documentos preparados ficam em memória no processo da API; após reiniciar a API, envie o PDF novamente. A coleção vetorial persiste em `data/vector_db` e ainda não tem limpeza automática.
+
+## Limites e custo de chamadas
+
+A antiga extração em lotes e as centenas de explicações individuais **não são executadas pela interface do mapa**. Os arquivos antigos em `data/checkpoints/` não são apagados, mas o mapa rápido é reconstruído diretamente do PDF e não reaproveita as explicações antigas. A interface nova não apresenta o checklist de documentos do fluxo antigo; consulte o edital para uma conferência exaustiva.
+
+A Groq informou um limite de 1.000 tokens de saída por minuto no cenário testado. O Nó 3 usa `GROQ_OUTPUT_TOKEN_BUDGET=950` por padrão e pode esperar aproximadamente um minuto entre perguntas seguidas. Agora esse custo só ocorre nos assuntos abertos pelo usuário. Outras cotas e a velocidade do modelo variam por conta e horário. A primeira indexação pode demorar pelo carregamento do modelo local; no PDF observado, a geração de 163 embeddings levou cerca de 14 segundos depois do carregamento. Isso não é uma garantia para outros PDFs ou computadores.
 
 | Variável | Uso |
 | --- | --- |
-| `GROQ_API_KEY` | Obrigatória para análise real. |
-| `GROQ_API_KEY_2` a `GROQ_API_KEY_5` | Chaves adicionais opcionais; a rotação é usada quando uma chave esgota a cota diária. |
-| `GROQ_OUTPUT_TOKEN_BUDGET` | Máximo de tokens de saída por chamada do Nó 3 (padrão: `950`), limitado também pelo `max_tokens` configurado. |
-| `GROQ_RPM_BUDGET` | Teto local preventivo de chamadas ao Nó 3 por minuto (padrão: `10`). Ajuste para um valor igual ou inferior ao RPM da sua conta Groq. Não alterna chaves por chamada. |
-| `NODE3_MOCK_MODE` | `false` por padrão; `true` gera dados de demonstração sem chamar a Groq. |
-| `CHROMA_PERSIST_DIRECTORY` | Diretório do banco vetorial; padrão `./data/vector_db`. |
-| `LICIT_CHECKPOINT_DIR` | Diretório de checkpoints locais; padrão `./data/checkpoints`. |
+| `GROQ_API_KEY` | Chave para chat e organização opcional de nomes. |
+| `NODE3_MOCK_MODE` | Deixe `false` para usar a IA real. |
+| `GROQ_OUTPUT_TOKEN_BUDGET` | Máximo preventivo de tokens de saída do Nó 3. |
+| `GROQ_RPM_BUDGET` | Teto local de chamadas por minuto. |
+| `CHROMA_PERSIST_DIRECTORY` | Diretório da coleção vetorial. |
 
-Copie `.env.example` para `.env`; o arquivo `.env` é ignorado pelo Git. O modelo da Groq e o modelo de embeddings são definidos no código dos respectivos nós. As variáveis antigas `DEFAULT_MODEL`, `CHROMA_COLLECTION_NAME` e `API_PORT` não controlam este fluxo.
+## Verificação
 
-Para conferir o modo ativo, abra `http://127.0.0.1:8002/status`. O modo de demonstração é sinalizado na interface e não deve ser usado como análise de um edital real.
-
-## Como a análise funciona
-
-1. **Nó 1 — PDF:** extrai texto com `pdfplumber` e divide o conteúdo em trechos, preservando o número físico da página. PDFs sem texto extraível podem exigir OCR antes do uso.
-2. **Nó 2 — embeddings:** codifica os trechos com `sentence-transformers` e cria uma coleção ChromaDB separada para cada execução.
-3. **Nó 3 — extração e explicação:** envia os trechos em lotes à Groq. Cada regra de participação ou seleção é extraída como um registro com título, trecho literal, página e eventual condição. O sistema confere que a citação existe na página indicada antes de salvá-la no checkpoint. Se a LLM insistir em uma citação sem fonte após três respostas, as regras verificadas são preservadas e a candidata sem fonte vai para uma seção destacada de revisão; ela não entra nos requisitos confirmados. Um JSON inteiramente inválido continua interrompendo o lote. O contexto dos trechos anteriores da mesma página permite reconhecer condições que cruzem a fronteira entre lotes. A explicação usa a cláusula associada e o trecho anterior da mesma página. O resumo ainda usa busca temática no ChromaDB. As explicações percorrem todos os itens verificados em lotes de cinco, com até duas novas tentativas quando faltar algum ID.
-4. **Nó 4 — checklist:** organiza os candidatos a documentos para proposta ou habilitação. Documentos da execução, anexos fornecidos pelo órgão e itens de etapa incerta ficam separados. Se o nó 3 falhar, o nó 4 é ignorado.
-
-O resumo usa uma amostra dos itens extraídos e informa sua cobertura. As explicações item a item percorrem todos os itens **identificados pela extração**. Isso não garante que todas as cláusulas do PDF tenham sido encontradas. Trechos recuperados por similaridade são pistas para verificação; não provam automaticamente cada conclusão.
-
-As indicações **aplicável**, **condicional** e **regra alternativa** são classificações automáticas, não validação jurídica. Para regras novas, a página e a citação vêm da extração estruturada. Uma citação literal confirma que o trecho aparece no PDF, mas ainda não prova que o título ou a interpretação estejam corretos. A comparação entre uma modalidade condicional e o modo escolhido no cabeçalho é feita com os textos do próprio documento; uma referência a subitem anterior sem a condição preservada fica pendente. Números novos que não constam no título, na citação ou na condição impedem a publicação da interpretação como confirmada. Uma leitura preliminar não confirma as condições ou a aplicação jurídica da regra. Não há exceções programadas para um edital específico.
-
-### Abas do resultado
-
-| Aba | Conteúdo |
-| --- | --- |
-| Resumo | Visão geral, riscos, alguns prazos e trechos do PDF com página para conferência. |
-| Perguntas respondidas | Itens extraídos por tema e trechos relacionados. |
-| Análise de requisitos | Condições de participação, disputa, julgamento, prazos e explicações item a item. |
-| Checklist de documentos | Candidatos a documentos da proposta/habilitação, com duplicatas comuns removidas. A obrigatoriedade aparece como **A confirmar** quando não há evidência específica. |
-| Execução e anexos | Atividades e entregas, documentos após a contratação, anexos para consulta e itens de etapa incerta. |
-| JSON completo | Dados brutos da análise, para diagnóstico. |
-
-## Progresso, limites e retomada
-
-Após o upload, a interface acompanha um job em segundo plano. A barra indica **lotes concluídos na etapa atual**; não é uma porcentagem global. A API também informa o estado em `GET /job/{job_id}`. `GET /status` verifica a configuração do serviço, não o progresso do job.
-
-A Groq pode responder `429 Too Many Requests` ou falhar temporariamente com `503 Service Unavailable`. O nó 3 lê dos cabeçalhos de cada resposta as cotas restantes de tokens por minuto e requisições por dia, e aguarda a renovação quando o próximo pedido pode superar o saldo. Também limita localmente chamadas por minuto com `GROQ_RPM_BUDGET`. A estimativa prévia de tokens é conservadora, mas não equivale ao tokenizador da Groq; chamadas de outros processos e limites separados de entrada/saída ainda podem gerar `429`. Em falhas temporárias de conexão ou HTTP 500/502/503/504, o nó faz até três tentativas adicionais com esperas de 5, 15 e 30 segundos; se persistir, o checkpoint permite retomar sem repetir lotes concluídos.
-
-Se ocorrer `429`, o nó 3 registra o tipo e o código do limite quando a Groq os fornecer, respeita `retry-after` quando disponível e faz até três novas tentativas na mesma chave. Depois do primeiro `429`, reduz o teto local para uma nova chamada por minuto enquanto esse job continuar. Quando a Groq informa explicitamente esgotamento da cota diária de tokens, tenta a próxima chave configurada; chaves da mesma organização não ampliam os limites globais. O job encerra com erro recuperável se a cota diária de requisições zerar, a espera necessária exceder cinco minutos ou o limite continuar após as tentativas. Um novo job do mesmo PDF retoma os dados salvos quando a cota voltar a estar disponível.
-
-Se uma chamada de extração exceder o limite de tokens do pedido, o lote é dividido automaticamente em partes menores. As partes concluídas são salvas em `partial_batches` no mesmo checkpoint, inclusive se uma parte posterior falhar. Ao retomar, o nó reaproveita as partes já salvas e mantém a contagem original de lotes. Quando a Groq fornece `Limit`, `Used` e `Requested` na mensagem de erro, esses números aparecem nos logs; um pedido maior que o limite não é repetido sem redução. O contexto anterior enviado junto a uma parte reduzida fica limitado aos dois trechos mais recentes da mesma página; os trechos principais do lote não são descartados. Se mesmo um único trecho não couber, seu texto é subdividido em partes menores, preservando todos os caracteres, a página e o identificador do chunk original.
-
-Após cada lote de extração e cada explicação válida, o nó 3 salva um checkpoint em `data/checkpoints/`. Se você iniciar **outra análise do mesmo PDF** com o mesmo modelo e a mesma versão do pipeline, ele reaproveita as chamadas concluídas e continua nos itens faltantes. A leitura do PDF e a indexação vetorial são executadas novamente. Se o conteúdo, o modelo ou a versão do checkpoint mudar, a extração começa de novo. Jobs da API existem apenas na memória do processo; o ID antigo deixa de funcionar após reiniciar a API, mas os checkpoints permanecem no disco.
-
-**Atualização do esquema de fontes:** a versão 2 do checkpoint exige a origem de cada regra. O arquivo da versão anterior permanece no disco, mas não fornece essa informação; por isso a primeira análise após esta mudança faz novamente os lotes de extração, gerando novas chamadas à Groq. A nova versão salva cada lote e permite retomar uma execução interrompida. Não apague os checkpoints antigos para atualizar.
-
-Quando apenas as instruções de redação mudam, a versão das explicações pode ser atualizada sem descartar os lotes de extração do mesmo esquema. A migração para o novo esquema de origem é diferente: os registros antigos não contêm cláusulas verificadas e exigem nova extração. O sistema ainda pode omitir cláusulas, extrair títulos errados ou interpretar mal uma condição mesmo com uma citação verdadeira. O relatório precisa ser confrontado com o PDF original.
-
-Os checkpoints podem conter conteúdo extraído do edital, ficam só na sua máquina e são ignorados pelo Git. Para forçar uma análise completamente nova, limpe `data/checkpoints/` antes de enviar o PDF; isso também descarta a retomada de outros editais. As coleções ChromaDB por execução persistem no disco e ainda não possuem limpeza automática.
-
-## Uso direto em Python
-
-```python
-from dotenv import load_dotenv
-load_dotenv()
-
-from app.rag.langgraph_workflow import run_licit_graph_pipeline
-
-state = run_licit_graph_pipeline("data/raw/uploads/edital.pdf")
-if state.get("error"):
-    raise RuntimeError(state["error"])
-
-print(state["analysis"]["explanatory_report"])
-print(state["checklist"]["resumo"])
-```
-
-## Testes
-
-```powershell
-python -m pytest tests/ -v
-```
-
-Há testes unitários com respostas simuladas para extração, páginas, classificação, explicações e retomada de checkpoints. Eles não comprovam a qualidade da redação nem a correção das exigências de um edital real; valide um PDF conhecido antes de usar o relatório para tomar decisões.
-
-## Estrutura principal
-
-```text
-app/api/main.py                  API FastAPI e jobs
-app/rag/pdf_reader.py            Extração de texto do PDF
-app/rag/node_1_reader_chunker.py Páginas e trechos
-app/rag/node_2_embeddings.py     Embeddings e ChromaDB
-app/rag/node_3_analyzer.py       Extração, RAG, explicações e checkpoints
-app/rag/node_4_document_generator.py Checklist
-app/rag/langgraph_workflow.py    Orquestração
-app/streamlit_app.py             Interface
-start_app.py                     Inicia API e interface
-tests/                           Testes
-```
-
-O limite de saída por minuto (OTPM) é separado do saldo de tokens exibido nos cabeçalhos. O Nó 3 usa um teto preventivo de 950 tokens por resposta; se a mensagem de erro informar um OTPM inferior, reduz `max_tokens` e tenta novamente respeitando o espaçamento local. Respostas com `finish_reason=length` não são aceitas como extrações completas: o lote é dividido e as partes concluídas permanecem no checkpoint. Com orçamento de até 1.000 tokens, as explicações são geradas um item por chamada. Isso aumenta o número de chamadas, mas evita tentar gerar cinco explicações em uma saída pequena. Se uma resposta de um único trecho ainda for truncada, o texto é subdividido preferindo limites de frases ou parágrafos. Cada subtrecho concluído é salvo no checkpoint com offsets de caracteres; a retomada reutiliza essas partes. A divisão tem limite de oito níveis e para em textos de até 80 caracteres, encerrando com progresso salvo se o modelo ainda não conseguir responder.
-
-Nesse orçamento pequeno, o modelo `qwen/qwen3.8-27b` recebe `reasoning_effort="none"` para dedicar a saída ao resultado. A LLM continua fazendo a análise e as explicações. O teto preventivo de até 1.000 tokens também limita o Nó 3 a uma chamada por minuto; chamadas externas ao processo ainda podem disputar a cota da organização.
-
-Os registros `partial_batches` existentes continuam válidos. Os novos subtrechos usam chaves como `2:3/text:0:500` e guardam `split_at` quando precisam de nova divisão. Uma citação que atravessa a fronteira é conferida no prefixo contíguo da mesma página e do mesmo chunk. Subdividir texto evita aceitar JSON truncado, mas não garante que a LLM extraia todas as cláusulas; a qualidade do relatório ainda exige avaliação com PDFs reais.
+Execute `python -m unittest discover -s tests -p 'test_topic*.py'` para testar a cobertura dos trechos no mapa e o agrupamento sem perda de fontes. A compilação dos arquivos Python também pode ser verificada com `python -m py_compile app/rag/topic_map.py app/api/main.py app/streamlit_app.py`. O fluxo completo com PDF e Groq reais depende de testar na máquina que tem as dependências e a chave configuradas.
