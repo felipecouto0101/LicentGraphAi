@@ -106,6 +106,35 @@ class APITests(unittest.TestCase):
         self.assertIn("Cota indisponível", result["organization_error"])
         self.assertEqual(result["topic_map"][0]["subtopics"][0]["chunk_ids"], [1])
 
+    def test_grouping_failure_displays_validated_subtopics_as_partial_map(self):
+        node1 = types.ModuleType("app.rag.node_1_reader_chunker")
+        node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+        node3 = types.ModuleType("app.rag.node_3_analyzer")
+        class Analyzer:
+            def __init__(self, **kw): pass
+            def _invoke_with_rotation(self, messages):
+                payload = json.loads(messages[1].content)
+                if "passages" not in payload:
+                    raise RuntimeError("Consolidação interrompida")
+                return types.SimpleNamespace(content=json.dumps({"topics": [{
+                    "theme": "Documentação", "title": "Capacidade técnica", "sources": [
+                        {"id": payload["passages"][0]["id"], "lines": [1]}]}]}))
+            _parse_llm_json = staticmethod(json.loads)
+        node3.Node3RequirementAnalyzer = Analyzer
+        messages = types.ModuleType("langchain_core.messages")
+        messages.SystemMessage = messages.HumanMessage = lambda content: types.SimpleNamespace(content=content)
+        with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1,
+                "app.rag.node_3_analyzer": node3, "langchain_core": types.ModuleType("langchain_core"),
+                "langchain_core.messages": messages}):
+            self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
+            self.api._run_topic_job("job", "edital.pdf")
+        result = self.api._jobs["job"]["result"]
+        self.assertEqual(result["organization_status"], "partial")
+        self.assertEqual(result["topic_map"][0]["subtopics"][0]["title"], "Capacidade técnica")
+        self.assertEqual(result["topic_map"][0]["subtopics"][0]["pages"], [4])
+        self.assertIn("Consolidação interrompida", result["organization_error"])
+
     def test_retry_refuses_concurrent_organization(self):
         self.api._jobs["job"] = {"status": "running", "result": {}}
         self.api._documents["job"] = {}
