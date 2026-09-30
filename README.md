@@ -151,3 +151,11 @@ A interface agrupa linhas verificadas consecutivas da mesma fonte e página em u
 Novas extrações guardam os separadores originais entre fragmentos de linha. Mapas antigos com índices de linha também se agrupam, mas sem essa informação não é possível reconstruir todas as quebras de parágrafo originais. O cache de identificação foi versionado para não reutilizar resultados sem os novos separadores em uma retomada. A apresentação não faz chamadas adicionais à IA nem gera explicações.
 
 Teste: `python -m unittest discover -s tests -p 'test_source_display.py' -v`.
+
+### Contexto original e sobreposição de chunks
+
+O leitor agora mantém as páginas completas na sessão do mapa. Depois da identificação, o backend localiza as citações nessas páginas, sem uma nova chamada à IA, e recupera o item numerado ou parágrafo que as contém. Trechos de chunks diferentes que pertencem ao mesmo intervalo original são exibidos uma única vez; a deduplicação não usa semelhança de frases. Os índices e evidências da IA permanecem armazenados, e a apresentação indica quando mostra contexto recuperado do documento.
+
+Itens como 11.5 e 11.5.1 são separados, e a recuperação termina no próximo cabeçalho/item identificado. Alíneas pertencentes ao item permanecem juntas. Quando a citação aparece mais de uma vez, o chunk original só desambigua se tiver uma localização única. Se página, origem ou limites não puderem ser confirmados, mantém-se o trecho selecionado e um aviso; páginas distintas nunca são fundidas. Um item possivelmente interrompido no fim da página é sinalizado, sem inventar uma continuação. Blocos excepcionalmente grandes têm recuperação limitada. Isso é recuperação de contexto original, não uma explicação nem uma garantia de segmentação perfeita para qualquer diagramação.
+
+Atualize e reinicie a aplicação, depois envie o PDF novamente para guardar as páginas completas na sessão. Mapas de sessões antigas sem esse texto continuam com os trechos selecionados. Testes: `python -m unittest discover -s tests -p 'test_source*.py' -v`.
