@@ -92,6 +92,33 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.api._jobs["job"]["progress"]["completed"], 1)
         self.assertFalse(hasattr(self.api, "ask_about_edital"))
 
+    def test_gemini_upload_organizes_without_groq_and_publishes_activity(self):
+        node1 = types.ModuleType("app.rag.node_1_reader_chunker")
+        node1.Node1ReaderChunker = lambda **kw: types.SimpleNamespace(
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+        events = []
+        class Gemini:
+            def __init__(self, progress): self.progress = progress
+            def invoke(self, system, payload):
+                self.progress(activity="waiting", activity_message="Aguardando Gemini", wait_until=123)
+                events.append(self_api._jobs["job"]["progress"].copy())
+                if "passages" in payload:
+                    return {"topics": [{"theme": "Documentos", "title": "Capacidade técnica",
+                        "sources": [{"id": "p1", "lines": [1]}]}]}
+                return {"themes": [{"title": "Documentos", "subtopics": [
+                    {"title": "Capacidade técnica", "source_ids": ["0"]}]}]}
+        self_api = self.api
+        with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1}), patch.object(
+                self.api, "provider_name", return_value="gemini"), patch.object(
+                self.api, "validate_topic_configuration"), patch.object(
+                self.api, "GeminiTopicClient", Gemini), patch.object(
+                self.api, "validate_analysis_configuration", side_effect=AssertionError("Groq should not run")):
+            self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
+            self.api._run_topic_job("job", "edital.pdf")
+        self.assertEqual(self.api._jobs["job"]["result"]["organization_status"], "done")
+        self.assertEqual(events[0]["activity"], "waiting")
+        self.assertEqual(events[0]["wait_until"], 123)
+
     def test_organization_failure_keeps_structural_index(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
