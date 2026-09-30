@@ -15,7 +15,7 @@ def _api_error(response):
 
 
 def _reset():
-    for key in ("result", "job_id", "topic_search", "selected_theme", "conversation", "selected_topic"):
+    for key in ("result", "job_id", "topic_search", "theme_choice", "selected_theme", "conversation", "selected_topic"):
         st.session_state.pop(key, None)
 
 
@@ -101,64 +101,101 @@ def _pages(pages):
     return ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in ranges)
 
 
+def _visible_themes(themes, search):
+    search = search.casefold().strip()
+    visible = []
+    for theme in themes:
+        children = [sub for sub in theme["subtopics"] if not search or search in
+                    (theme["title"] + " " + sub["title"] + " " + " ".join(sub.get("source_titles", []))).casefold()]
+        if children:
+            visible.append((theme, children))
+    return visible
+
+
+def _count_label(count, organized):
+    singular, plural = ("assunto", "assuntos") if organized else ("subseção", "subseções")
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _subtopic_card(sub, organized):
+    generic = sub["title"] in ("Visão geral da seção", "Visão geral e cláusulas da seção")
+    with st.container(border=True):
+        st.subheader("Conteúdo da seção" if generic and not organized else sub["title"])
+        st.caption("Páginas do PDF: " + _pages(sub["pages"]))
+        if generic and not organized:
+            st.caption("Esta seção ainda não foi dividida em assuntos pela IA.")
+        evidence = sub.get("evidence", [])
+        if evidence:
+            with st.expander("Conferir trechos de origem"):
+                shown = set()
+                for source in evidence:
+                    key = (source["page"], " ".join(source["quote"].split()).casefold())
+                    if key in shown:
+                        continue
+                    shown.add(key)
+                    st.caption(f"Página {source['page']}")
+                    st.write(source["quote"])
+        sources = sub.get("source_titles", [])
+        if sources:
+            with st.expander("Seções vinculadas no PDF"):
+                for title in sources:
+                    st.write(title)
+
+
 def _topic_browser(api_url, job_id, result):
     themes = result["topic_map"]
     organized = result.get("organization_status") == "done"
-    st.caption(result.get("filename", "Edital em PDF"))
-    st.header("Assuntos do seu edital" if organized else "Índice original do PDF")
-    st.write("Explore os temas e veja onde cada assunto aparece no documento.")
-    columns = st.columns(3)
-    columns[0].metric("Temas", len(themes))
-    columns[1].metric("Assuntos", sum(len(t["subtopics"]) for t in themes))
-    columns[2].metric("Páginas", result.get("page_count") or "—")
+    with st.container(border=True):
+        st.caption(result.get("filename", "Edital em PDF"))
+        st.header("Assuntos do seu edital" if organized else "Índice original do PDF")
+        st.caption("Organizado com IA" if organized else "Organização com IA interrompida · índice estrutural disponível")
+        columns = st.columns(3)
+        columns[0].metric("Temas" if organized else "Seções", len(themes))
+        columns[1].metric("Assuntos" if organized else "Subseções", sum(len(t["subtopics"]) for t in themes))
+        columns[2].metric("Páginas", result.get("page_count") or "—")
     if not organized:
-        st.warning("A IA ainda não concluiu a organização. Abaixo está o índice original, preservado para conferência.")
-        with st.expander("Detalhes da interrupção"):
-            st.write(result.get("organization_error") or "Organização pendente.")
-        if st.button("Retomar organização com IA", type="primary"):
-            _retry(api_url, job_id)
-    missing_annexes = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
-    if missing_annexes:
-        with st.expander(f"Anexos mencionados sem seção identificada · {len(missing_annexes)}"):
-            st.write("Não identificamos estes anexos como seções neste arquivo. Eles podem estar em arquivos separados ou ter outro formato de título.")
-            for reference in missing_annexes:
-                st.caption(reference["label"] + " · mencionado nas páginas " + _pages(reference["pages"]))
-    search = st.text_input("Buscar um assunto", placeholder="Ex.: documentos, proposta, pagamento", key="topic_search").casefold().strip()
-    visible = []
-    for theme in themes:
-        children = [s for s in theme["subtopics"] if not search or search in
-                    (theme["title"] + " " + s["title"] + " " + " ".join(s.get("source_titles", []))).casefold()]
-        if children:
-            visible.append((theme, children))
-    if not visible:
-        st.info("Nenhum assunto encontrado. Tente outra palavra.")
-        return
-    st.caption("Abra um tema para consultar seus assuntos e páginas de origem.")
-    columns = st.columns(2, gap="large")
-    for index, (theme, children) in enumerate(visible):
-        with columns[index % 2]:
-            with st.expander(f"{theme['title']} · {len(children)} assuntos", expanded=bool(search)):
+        with st.container(border=True):
+            st.subheader("Organização pendente")
+            st.warning("A IA não concluiu o mapa de assuntos. Você pode consultar as seções originais do PDF abaixo.")
+            with st.expander("Detalhes da interrupção", expanded=True):
+                st.write(result.get("organization_error") or "Organização pendente.")
+            if st.button("Retomar organização com IA", type="primary"):
+                _retry(api_url, job_id)
+    with st.container(border=True):
+        st.subheader("Mapa de assuntos" if organized else "Navegação pelas seções do PDF")
+        st.write("Selecione um tema à esquerda para ver seus assuntos à direita." if organized
+                 else "Selecione uma seção para consultar suas subseções e páginas de origem.")
+        search = st.text_input("Buscar um assunto" if organized else "Buscar uma seção",
+                              placeholder="Ex.: documentos, proposta, pagamento", key="topic_search")
+        visible = _visible_themes(themes, search)
+        if not visible:
+            st.info("Nenhum resultado encontrado. Tente outra palavra.")
+        else:
+            navigation, contents = st.columns([1, 2.5], gap="large")
+            by_id = {theme["id"]: (theme, children) for theme, children in visible}
+            with navigation:
+                st.markdown("**Temas**" if organized else "**Seções originais**")
+                if st.session_state.get("theme_choice") not in by_id:
+                    st.session_state.pop("theme_choice", None)
+                chosen = st.selectbox("Escolher tema" if organized else "Escolher seção", list(by_id),
+                    format_func=lambda key: by_id[key][0]["title"], key="theme_choice")
+                st.caption(f"{len(visible)} de {len(themes)} " + ("temas disponíveis" if organized else "seções disponíveis"))
+                theme, children = by_id[chosen]
+                st.caption(_count_label(len(children), organized))
+            with contents:
+                st.subheader(theme["title"])
+                st.caption(_count_label(len(children), organized) + " · referências ao documento original")
                 for sub in children:
-                    with st.container(border=True):
-                        st.markdown("**" + sub["title"] + "**")
-                        st.caption("Páginas do PDF: " + _pages(sub["pages"]))
-                        evidence = sub.get("evidence", [])
-                        if evidence:
-                            with st.expander("Trechos que identificam este assunto"):
-                                shown = set()
-                                for source in evidence:
-                                    key = (source["page"], " ".join(source["quote"].split()).casefold())
-                                    if key in shown:
-                                        continue
-                                    shown.add(key)
-                                    st.caption(f"Página {source['page']}")
-                                    st.write(source["quote"])
-                        sources = sub.get("source_titles", [])
-                        if sources:
-                            with st.expander("Seções de origem"):
-                                for title in sources:
-                                    st.write(title)
-    st.caption("Este mapa organiza assuntos; não confirma exigências nem substitui a leitura das páginas indicadas.")
+                    _subtopic_card(sub, organized)
+        st.caption("As páginas indicam a origem das informações. O mapa ainda não gera explicações.")
+    missing = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
+    if missing:
+        with st.container(border=True):
+            st.subheader("Conferência de anexos")
+            with st.expander(f"Referências sem seção identificada · {len(missing)}"):
+                st.write("Estes anexos foram mencionados, mas não identificados como seções neste arquivo. Podem estar em arquivos separados ou ter outro formato de título.")
+                for reference in missing:
+                    st.caption(reference["label"] + " · mencionado nas páginas " + _pages(reference["pages"]))
 
 
 def main():
