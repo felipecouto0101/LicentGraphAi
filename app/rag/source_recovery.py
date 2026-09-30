@@ -48,6 +48,10 @@ class SourceRecovery:
             for page, text in self.pages.items()}
         self.chunks = {chunk['metadata']['chunk_id']: chunk for chunk in chunks}
         self.cache = {}
+        self.body_ends = {}
+        for page, text in self.pages.items():
+            tail = list(re.finditer(r"(?m)^.*(?:p[áa]gina\s+\d+\s+(?:de|/)\s*\d+).*$", text, re.I))
+            self.body_ends[page] = tail[-1].start() if tail and not text[tail[-1].end():].strip() else len(text)
 
     def _locate(self, evidence):
         page = evidence.get('page')
@@ -76,7 +80,7 @@ class SourceRecovery:
         ranges = []
         for i, boundary in enumerate(boundaries):
             left = boundary.start()
-            right = boundaries[i + 1].start() if i + 1 < len(boundaries) else len(text)
+            right = boundaries[i + 1].start() if i + 1 < len(boundaries) else self.body_ends[page]
             right = min([right] + [t["start"] for t in self.tables.get(page, []) if left < t["start"]])
             if boundary.group('item') and left < end and right > start:
                 ranges.append((left, right, boundary.group('item'), True))
@@ -85,7 +89,7 @@ class SourceRecovery:
         # Without an explicit numbered clause, use only the containing paragraph.
         separators = list(re.finditer(r'\n\s*\n', text))
         left = max([0] + [m.end() for m in separators if m.end() <= start])
-        right = min([len(text)] + [m.start() for m in separators if m.start() >= end])
+        right = min([self.body_ends[page]] + [m.start() for m in separators if m.start() >= end])
         for boundary in boundaries:
             if boundary.start() <= start:
                 left = max(left, boundary.start())
@@ -95,30 +99,82 @@ class SourceRecovery:
             return [(start, end, None, False)]
         return [(left, right, None, False)]
 
+    def _continuation_pair(self, page):
+        if page - 1 not in self.pages or not self.boundaries.get(page - 1):
+            return None
+        previous = self.boundaries[page - 1][-1]
+        if not previous.group("item"):
+            return None
+        previous_end = self.body_ends[page - 1]
+        left = previous.start()
+        head_end = self.boundaries[page][0].start() if self.boundaries.get(page) else self.body_ends[page]
+        prefix = self.pages[page][:head_end].strip()
+        tail = self.pages[page - 1][left:previous_end].strip()
+        if (not prefix or not prefix[0].islower() or not tail or tail.endswith((".", ";", "!", "?"))
+                or any(t["start"] < head_end for t in self.tables.get(page, []))):
+            return None
+        return (page - 1, left, previous_end, page, head_end, previous.group("item"))
+
+    def _combined_clause(self, pair, source):
+        previous, start, end, page, head_end, item = pair
+        text = self.pages[previous][start:end].strip() + " " + self.pages[page][:head_end].strip()
+        return {"page": previous, "pages": [previous, page], "start": start, "end": end,
+                "segments": [{"page": previous, "start": start, "end": end},
+                             {"page": page, "start": 0, "end": head_end}],
+                "item": item, "text": _readable(text), "expanded": True, "source_ids": [source],
+                "context_status": "clause_across_pages", "continuation_pending": False}
+
+    def _linked_tables(self, page, table, source):
+        while table.get("continued_from"):
+            link = table["continued_from"]
+            parent = next((t for t in self.tables.get(link["page"], []) if t["id"] == link["id"]), None)
+            if parent is None or link["page"] >= page:
+                break
+            page, table = link["page"], parent
+        pending, result, seen = [(page, table)], [], set()
+        while pending:
+            page, table = pending.pop(0)
+            if (page, table.get("id")) in seen:
+                continue
+            seen.add((page, table.get("id")))
+            result.append({"page": page, "start": table["start"], "end": table["end"],
+                "item": None, "table": table, "text": _readable(self.pages[page][table["start"]:table["end"]]),
+                "expanded": True, "source_ids": [source], "context_status": "table", "continuation_pending": False})
+            for link in table.get("continuations", []):
+                child = next((t for t in self.tables.get(link["page"], []) if t["id"] == link["id"]), None)
+                if child is not None and link["page"] > page:
+                    pending.append((link["page"], child))
+        return result
+
     def _recover(self, evidence):
         key = (evidence.get('page'), evidence.get('chunk_id'), evidence.get('source_id'), evidence.get('quote'))
         if key in self.cache:
             return self.cache[key]
         location = self._locate(evidence)
-        if location is None:
-            result = []
-        else:
-            result = []
-            for start, end, item, numbered in self._ranges(evidence['page'], *location):
-                # Bound reconstruction rather than claiming an enormous section
-                # is a complete clause when its boundary cannot be established.
-                if end - start > 12000:
-                    start, end, item, numbered = *location, None, False
-                text = self.pages[evidence['page']][start:end].strip()
-                table = next((t for t in self.tables.get(evidence['page'], [])
-                              if t["start"] == start and t["end"] == end), None)
-                result.append({'page': evidence['page'], 'start': start, 'end': end,
-                    'table': table,
-                    'item': item, 'text': _readable(text), 'expanded': True,
-                    'source_ids': [evidence.get('source_id')],
-                    'context_status': 'table' if table else 'clause_on_page' if numbered else 'paragraph',
-                    'continuation_pending': bool(numbered and end == len(self.pages[evidence['page']])
-                                                  and not text.endswith(('.', ';', '!', '?')))})
+        result = []
+        if location is not None:
+            page, source = evidence["page"], evidence.get("source_id")
+            pair = self._continuation_pair(page)
+            if pair and location[1] <= pair[4]:
+                result = [self._combined_clause(pair, source)]
+            else:
+                for start, end, item, numbered in self._ranges(page, *location):
+                    table = next((t for t in self.tables.get(page, []) if t["start"] == start and t["end"] == end), None)
+                    if table:
+                        result.extend(self._linked_tables(page, table, source))
+                        continue
+                    next_pair = self._continuation_pair(page + 1) if page + 1 in self.pages else None
+                    if next_pair and next_pair[1] == start and numbered:
+                        result.append(self._combined_clause(next_pair, source))
+                        continue
+                    if end - start > 12000:
+                        start, end, item, numbered = *location, None, False
+                    text = self.pages[page][start:end].strip()
+                    result.append({'page': page, 'start': start, 'end': end, 'item': item,
+                        'text': _readable(text), 'expanded': True, 'source_ids': [source],
+                        'context_status': 'clause_on_page' if numbered else 'paragraph',
+                        'continuation_pending': bool(numbered and end == self.body_ends[page]
+                                                      and not text.endswith(('.', ';', '!', '?')))})
         self.cache[key] = result
         return result
 
@@ -138,6 +194,8 @@ class SourceRecovery:
                             blocks[key]['source_ids'].extend(source for source in row['source_ids']
                                 if source not in blocks[key]['source_ids'])
                 sub['source_blocks'] = sorted(blocks.values(), key=lambda row: (row['page'], row['start']))
+                if "pages" in sub:
+                    sub["pages"] = sorted(set(sub["pages"]) | {p for b in blocks.values() for p in b.get("pages", [b["page"]])})
                 remaining, seen = [], set()
                 for evidence in fallback:
                     page = evidence.get("page")
@@ -147,8 +205,9 @@ class SourceRecovery:
                     matches = _matches(normalized, quote)
                     # Hide ambiguous repeated selections only when every occurrence
                     # is already represented by verified recovered page intervals.
-                    covered = bool(matches) and all(any(b["page"] == page and b["start"] <= positions[m]
-                        and positions[m + len(quote) - 1] < b["end"] for b in blocks.values()) for m in matches)
+                    covered = bool(matches) and all(any(any(segment["page"] == page and segment["start"] <= positions[m]
+                        and positions[m + len(quote) - 1] < segment["end"]
+                        for segment in b.get("segments", [b])) for b in blocks.values()) for m in matches)
                     if not covered and signature not in seen:
                         remaining.append(evidence)
                         seen.add(signature)
