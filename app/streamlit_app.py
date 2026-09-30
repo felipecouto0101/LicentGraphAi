@@ -1,206 +1,181 @@
-"""Mapa navegável de editais: explicações são geradas somente sob demanda."""
-
+"""Etapa atual: organização e navegação do mapa, sem chat ou explicações."""
 import time
-
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="LicitGraphAi · Mapa do edital", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="LicitGraphAi · Assuntos do edital", page_icon="🧭", layout="wide")
 API_URL = "http://127.0.0.1:8002"
 
 
 def _api_error(response):
     try:
-        return response.json().get("detail", response.text)
+        return response.json().get("detail", "Não foi possível concluir a solicitação.")
     except ValueError:
-        return response.text or f"HTTP {response.status_code}"
+        return f"A API respondeu com erro {response.status_code}."
 
 
-def _ask(api_url: str, job_id: str, question: str, topic_id: str | None):
-    # Mensagens antigas são apenas contexto; o backend busca novamente as fontes.
-    history = [{"role": row["role"], "content": row["content"]}
-               for row in st.session_state.get("conversation", [])[-4:]]
-    st.session_state.setdefault("conversation", []).append(
-        {"role": "user", "content": question, "topic_id": topic_id})
-    with st.spinner("Consultando as cláusulas e conferindo as páginas..."):
-        try:
-            response = requests.post(
-                f"{api_url}/job/{job_id}/ask",
-                json={"topic_id": topic_id, "question": question, "history": history},
-                timeout=360,
-            )
-            if response.status_code != 200:
-                st.error(_api_error(response))
-                return
-            data = response.json()
-            st.session_state["conversation"].append(
-                {"role": "assistant", "content": data["answer"],
-                 "citations": data.get("citations", []), "topic_id": topic_id})
-        except requests.RequestException as exc:
-            st.error(f"Falha de conexão com a API: {exc}")
+def _reset():
+    for key in ("result", "job_id", "topic_search", "selected_theme", "conversation", "selected_topic"):
+        st.session_state.pop(key, None)
 
 
-def _prepare(api_url: str, file):
-    st.session_state.pop("result", None)
-    st.session_state.pop("conversation", None)
-    st.session_state.pop("selected_topic", None)
-    st.session_state.pop("topic_search", None)
+def _prepare(api_url, file):
     try:
-        response = requests.post(
-            f"{api_url}/analyze/upload",
-            files={"file": (file.name, file.getvalue(), "application/pdf")},
-            timeout=40,
-        )
-        if response.status_code == 200:
-            st.session_state["job_id"] = response.json()["job_id"]
-            st.rerun()
-        st.error(_api_error(response))
-    except requests.RequestException as exc:
-        st.error(f"Falha no envio do PDF: {exc}")
+        response = requests.post(f"{api_url}/analyze/upload",
+            files={"file": (file.name, file.getvalue(), "application/pdf")}, timeout=40)
+        if response.status_code != 200:
+            st.error(_api_error(response))
+            return
+        _reset()
+        st.session_state["job_id"] = response.json()["job_id"]
+        st.rerun()
+    except requests.RequestException:
+        st.error("Não foi possível enviar o PDF. Confira se a API está em execução.")
 
 
-def _poll(api_url: str, job_id: str):
+def _poll(api_url, job_id):
     try:
         response = requests.get(f"{api_url}/job/{job_id}", timeout=8)
         if response.status_code != 200:
             st.error(_api_error(response))
-            return
-        data = response.json()
-    except requests.RequestException as exc:
-        st.warning(f"Aguardando API: {exc}")
-        time.sleep(3)
-        st.rerun()
-        return
-    if data["status"] == "done":
-        result = data.get("result") or {}
-        if result.get("map_version") != 2 or not result.get("topic_map"):
-            st.error("A API retornou um mapa antigo ou incompleto. Atualize e reinicie "
-                     "o backend e crie o mapa novamente com o PDF.")
-            if st.button("Voltar ao envio do PDF"):
-                st.session_state.pop("job_id", None)
+            if st.button("Enviar novamente"):
+                _reset()
                 st.rerun()
             return
-        st.session_state["result"] = data["result"]
-        st.rerun()
-    if data["status"] == "error":
-        st.error(data.get("error") or "Não foi possível preparar o mapa.")
-        if st.button("Tentar outro arquivo"):
-            st.session_state.pop("job_id", None)
+        job = response.json()
+    except requests.RequestException:
+        st.warning("A conexão com a API foi interrompida. O processamento pode continuar no backend.")
+        if st.button("Verificar novamente"):
             st.rerun()
         return
-    st.info(data.get("progress", {}).get("stage", "Preparando o mapa..."))
-    st.caption("As explicações serão geradas apenas quando você abrir um assunto ou fizer uma pergunta.")
-    time.sleep(4)
+    if job["status"] == "done":
+        result = job.get("result") or {}
+        if result.get("map_version") != 3 or not result.get("topic_map"):
+            st.error("Atualize e reinicie a aplicação para preparar o novo mapa.")
+            if st.button("Voltar ao envio"):
+                _reset()
+                st.rerun()
+            return
+        result["filename"] = job.get("file", "Edital em PDF")
+        st.session_state["result"] = result
+        st.rerun()
+    elif job["status"] == "error":
+        st.error(job.get("error") or "Não foi possível ler o PDF.")
+        if st.button("Voltar ao envio"):
+            _reset()
+            st.rerun()
+        return
+    progress = job.get("progress", {})
+    with st.container(border=True):
+        st.subheader("Preparando seu mapa")
+        st.write(progress.get("stage", "Aguardando processamento"))
+        total = progress.get("total", 0)
+        done = progress.get("completed", 0)
+        if total:
+            st.progress(min(done / total, 1), text=f"{done} de {total} etapas de organização concluídas")
+        st.caption("A IA organiza apenas nomes e agrupamentos. As cotas da API podem exigir pausas entre chamadas.")
+    time.sleep(3)
     st.rerun()
 
 
-def _topic_browser(api_url: str, job_id: str, result: dict):
-    themes = result.get("topic_map") or []
-    if not themes:
-        st.error("Nenhum tema foi recebido. Crie o mapa novamente a partir do PDF.")
-        return
-    subtopics = {sub["id"]: (theme, sub) for theme in themes
-                 for sub in theme.get("subtopics", [])}
-    st.caption(f"{len(themes)} temas · {len(subtopics)} subtemas · "
-               f"{result.get('chunks_count', 0)} trechos indexados")
-    st.info("O mapa usa títulos e trechos do PDF. Confira as páginas: títulos automáticos podem não refletir toda a cláusula.")
-    left, right = st.columns([1, 2], gap="large")
-    with left:
-        st.subheader("Mapa de assuntos")
-        search = st.text_input("Encontrar um assunto", placeholder="Ex.: habilitação, prazo, proposta",
-                               key="topic_search")
-        visible = 0
-        for theme in themes:
-            children = [sub for sub in theme["subtopics"]
-                        if not search or search.casefold() in (theme["title"] + " " + sub["title"]
-                        + " " + theme.get("display_title", "") + " " + sub.get("display_title", "")).casefold()]
-            if not children:
-                continue
-            visible += len(children)
-            with st.expander(f"{theme.get('display_title', theme['title'])} · {len(children)}",
-                             expanded=bool(search) or len(themes) <= 10):
-                if theme.get("display_title") and theme["display_title"] != theme["title"]:
-                    st.caption(f"Título no PDF: {theme['title']}")
-                if st.button("Organizar nomes com IA", key=f"rename-{theme['id']}"):
-                    with st.spinner("Organizando os nomes deste tema..."):
-                        try:
-                            renamed = requests.post(f"{api_url}/job/{job_id}/organize",
-                                                    json={"theme_id": theme["id"]}, timeout=360)
-                            if renamed.status_code == 200:
-                                st.session_state["result"]["topic_map"] = renamed.json()["topic_map"]
-                                st.rerun()
-                            st.error(_api_error(renamed))
-                        except requests.RequestException as exc:
-                            st.error(f"Falha ao organizar nomes: {exc}")
-                for sub in children:
-                    pages = ", ".join(str(p) for p in sub["pages"][:5])
-                    label = sub.get("display_title", sub["title"])
-                    if st.button(label, key=f"open-{sub['id']}", use_container_width=True):
-                        st.session_state["selected_topic"] = sub["id"]
-                        st.rerun()
-                    st.caption(f"Páginas {pages}" + ("…" if len(sub["pages"]) > 5 else ""))
-        if not visible:
-            st.warning("Nenhum assunto corresponde a essa busca.")
-    with right:
-        selected = st.session_state.get("selected_topic")
-        if selected and selected not in subtopics:
-            st.session_state.pop("selected_topic", None)
-            selected = None
-        if selected:
-            theme, sub = subtopics[selected]
-            st.caption(theme.get("display_title", theme["title"]))
-            st.header(sub.get("display_title", sub["title"]))
-            if sub.get("display_title") and sub["display_title"] != sub["title"]:
-                st.caption(f"Título no PDF: {sub['title']}")
-            st.write("Páginas do PDF: " + ", ".join(map(str, sub["pages"])))
-            st.caption(f"{len(sub['chunk_ids'])} trechos relacionados. A explicação ainda não foi gerada.")
-            if st.button("✨ Explicar este assunto", type="primary", key=f"explain-{selected}"):
-                _ask(api_url, job_id, f"Explique o assunto {sub['title']}, "
-                     "suas condições, exceções e consequências para o licitante.", selected)
+def _retry(api_url, job_id):
+    try:
+        response = requests.post(f"{api_url}/job/{job_id}/organize-map", timeout=10)
+        if response.status_code not in (200, 409):
+            st.error(_api_error(response))
+            return
+        st.session_state.pop("result", None)
+        st.rerun()
+    except requests.RequestException:
+        st.warning("Não foi possível confirmar a retomada. Verifique o andamento antes de reenviar o PDF.")
+
+
+def _pages(pages):
+    values = sorted(set(pages))
+    ranges = []
+    for value in values:
+        if ranges and value == ranges[-1][1] + 1:
+            ranges[-1][1] = value
         else:
-            st.header("Explore o edital")
-            st.write("Escolha um subtema no mapa ou faça uma pergunta sobre o documento.")
-        st.divider()
-        st.subheader("Conversa sobre o edital")
-        for row in st.session_state.get("conversation", []):
-            with st.chat_message(row["role"]):
-                st.write(row["content"])
-                for citation in row.get("citations", []):
-                    st.caption(f"Página {citation['page']}: {citation['quote']}")
-        search_whole_pdf = (st.checkbox("Pesquisar em todo o edital", value=False)
-                            if selected else True)
-        question = st.chat_input("Pergunte sobre este assunto ou sobre todo o edital")
-        if question:
-            _ask(api_url, job_id, question, None if search_whole_pdf else selected)
-            st.rerun()
+            ranges.append([value, value])
+    return ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in ranges)
+
+
+def _topic_browser(api_url, job_id, result):
+    themes = result["topic_map"]
+    organized = result.get("organization_status") == "done"
+    st.caption(result.get("filename", "Edital em PDF"))
+    st.header("Assuntos do seu edital" if organized else "Índice original do PDF")
+    st.write("Explore os temas e veja onde cada assunto aparece no documento.")
+    columns = st.columns(3)
+    columns[0].metric("Temas", len(themes))
+    columns[1].metric("Assuntos", sum(len(t["subtopics"]) for t in themes))
+    columns[2].metric("Páginas", result.get("page_count") or "—")
+    if not organized:
+        st.warning("A IA ainda não concluiu a organização. Abaixo está o índice original, preservado para conferência.")
+        with st.expander("Detalhes da interrupção"):
+            st.write(result.get("organization_error") or "Organização pendente.")
+        if st.button("Retomar organização com IA", type="primary"):
+            _retry(api_url, job_id)
+    search = st.text_input("Buscar um assunto", placeholder="Ex.: documentos, proposta, pagamento", key="topic_search").casefold().strip()
+    visible = []
+    for theme in themes:
+        children = [s for s in theme["subtopics"] if not search or search in
+                    (theme["title"] + " " + s["title"] + " " + " ".join(s.get("source_titles", []))).casefold()]
+        if children:
+            visible.append((theme, children))
+    if not visible:
+        st.info("Nenhum assunto encontrado. Tente outra palavra.")
+        return
+    st.caption("Abra um tema para consultar seus assuntos e páginas de origem.")
+    columns = st.columns(2, gap="large")
+    for index, (theme, children) in enumerate(visible):
+        with columns[index % 2]:
+            with st.expander(f"{theme['title']} · {len(children)} assuntos", expanded=bool(search)):
+                for sub in children:
+                    with st.container(border=True):
+                        st.markdown("**" + sub["title"] + "**")
+                        st.caption("Páginas do PDF: " + _pages(sub["pages"]))
+                        sources = sub.get("source_titles", [])
+                        if sources:
+                            with st.expander("Seções de origem"):
+                                for title in sources:
+                                    st.write(title)
+    st.caption("Este mapa organiza assuntos; não confirma exigências nem substitui a leitura das páginas indicadas.")
 
 
 def main():
     st.title("🧭 LicitGraphAi")
-    st.write("Navegue pelos assuntos do edital. Peça explicações apenas sobre o que interessa a você.")
+    st.write("Um mapa organizado para entender o que seu edital aborda.")
     stored = st.session_state.get("result")
-    if stored and stored.get("map_version") != 2:
-        for key in ("result", "job_id", "selected_topic", "conversation", "topic_search"):
-            st.session_state.pop(key, None)
-        st.info("A identificação dos temas foi atualizada. Envie o PDF para reconstruir o mapa.")
-    api_url = st.sidebar.text_input("URL da API", value=API_URL).rstrip("/")
-    try:
-        status = requests.get(f"{api_url}/status", timeout=3).json()
-        if not status.get("ready", True):
-            st.sidebar.caption("A chave Groq será necessária para gerar explicações no chat.")
-        if status.get("analysis_mode") == "demo":
-            st.sidebar.warning("Modo demonstração ativado. O chat exige uma chave Groq real.")
-    except requests.RequestException:
-        st.sidebar.warning("API indisponível no momento.")
-    file = st.file_uploader("Escolha um edital em PDF", type="pdf")
-    if file and st.button("Criar mapa de assuntos", type="primary"):
-        _prepare(api_url, file)
+    if stored and stored.get("map_version") != 3:
+        _reset()
+        st.info("Envie novamente o PDF para organizar os assuntos com IA.")
+    with st.sidebar:
+        st.header("Seu documento")
+        with st.expander("Conexão com a API"):
+            api_url = st.text_input("Endereço", value=API_URL).rstrip("/")
+        try:
+            response = requests.get(f"{api_url}/status", timeout=3)
+            status = response.json()
+            if not status.get("ready", True) or status.get("analysis_mode") == "demo":
+                st.warning("Configure a chave Groq e desative o modo demonstração para organizar os assuntos.")
+        except (requests.RequestException, ValueError):
+            st.warning("API indisponível. Inicie o backend para enviar um PDF.")
+        file = st.file_uploader("Enviar edital", type="pdf")
+        busy = st.session_state.get("job_id") and not st.session_state.get("result")
+        if st.button("Organizar assuntos", type="primary", disabled=file is None or bool(busy), use_container_width=True):
+            _prepare(api_url, file)
+        st.caption("Nesta etapa, a IA cria temas e subtemas. Explicações e chat serão adicionados depois.")
     if st.session_state.get("result") and st.session_state.get("job_id"):
         _topic_browser(api_url, st.session_state["job_id"], st.session_state["result"])
     elif st.session_state.get("job_id"):
         _poll(api_url, st.session_state["job_id"])
     else:
-        st.caption("O PDF será lido e indexado antes de mostrar o mapa. Nenhuma explicação é gerada nessa etapa.")
+        with st.container(border=True):
+            st.subheader("Comece pelo seu edital")
+            st.write("Envie um PDF na lateral. Vamos identificar suas seções e organizar os assuntos em nomes claros.")
+            st.caption("Cada assunto mantém as páginas e seções de origem para você consultar o documento.")
 
 
 if __name__ == "__main__":
