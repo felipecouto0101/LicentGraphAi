@@ -41,7 +41,7 @@ Após atualizar para esta versão, reinicie os dois processos e envie novamente 
 
 1. `pdfplumber` extrai páginas preservando linhas. O leitor identifica seções antes de dividir em chunks, reúne títulos quebrados e evita interpretar o sumário como corpo.
 2. Todos os chunks são enviados com seu texto completo, IDs e páginas. Chunks acima de 2.400 caracteres são fragmentados sem descarte; lotes são limitados a oito entradas e 8.000 caracteres de texto.
-3. A IA identifica subtemas diferentes dentro de cada trecho, usando títulos curtos e citações literais de até 120 caracteres. Cada referência e citação é conferida no trecho informado. Todos os IDs do lote precisam estar cobertos antes de salvá-lo.
+3. O texto completo é apresentado em linhas curtas numeradas (até 160 caracteres). A IA identifica subtemas e seleciona IDs dos trechos e de uma a três linhas por fonte. O backend verifica os índices e monta citações diretamente do texto original, sem pedir à IA para copiá-las. Todos os IDs do lote precisam estar cobertos antes de salvá-lo. Uma referência inválida recebe uma tentativa de correção; depois o lote é reduzido, sem aceitar fontes inventadas.
 4. Nomes e sugestões de tema são consolidados em lotes compactos de até 12 assuntos. O modelo pode reunir sinônimos; duplicações de mesmo nome no grupo final são reunidas. Todos os assuntos precisam ser preservados, sem IDs inventados ou repetidos.
 5. Cada subtema recebe somente as páginas, chunks e citações vinculados a ele; não herda todas as páginas da seção estrutural. A interface permite abrir os trechos utilizados.
 6. Uma conferência local compara menções a anexos com cabeçalhos identificados no arquivo, inclusive equivalência entre números romanos e arábicos. Uma referência não localizada não prova ausência: o anexo pode estar em outro arquivo ou ter formatação não reconhecida.
@@ -83,7 +83,7 @@ A Groq informou um teto de 1.000 tokens de saída por minuto no cenário observa
 | `GROQ_RPM_BUDGET` | Limite local de chamadas por minuto. |
 | `CHROMA_PERSIST_DIRECTORY` | Diretório vetorial do fluxo completo anterior. |
 
-Cobertura de IDs confirma que todos os trechos enviados receberam ao menos uma referência, mas não garante que a IA identificou cada assunto dentro deles. Citação literal confirma a origem do trecho, não a adequação semântica de todo título. Consolidações limitadas a lotes podem deixar sinônimos em grupos diferentes. Os nomes e agrupamentos devem ser avaliados com editais variados. PDFs digitalizados precisam de OCR, ainda não implementado neste fluxo.
+Cobertura de IDs confirma que todos os trechos enviados receberam ao menos uma referência, mas não garante que a IA identificou cada assunto dentro deles. Citação literal confirma a origem do trecho, não a adequação semântica de todo título. Consolidações limitadas a lotes podem deixar sinônimos em grupos diferentes. Os nomes e agrupamentos devem ser avaliados com editais variados. PDFs digitalizados precisam de OCR, ainda não implementado neste fluxo. Na interface, resumo do documento, status, navegação e anexos têm áreas delimitadas. O índice de contingência usa rótulos de seções/subseções e mantém o erro visível, evitando parecer um mapa final da IA.
 
 ## Verificação
 
@@ -92,4 +92,4 @@ python -m unittest discover -s tests -p 'test_topic*.py' -v
 python -m py_compile app/rag/topic_map.py app/rag/topic_organizer.py app/api/main.py app/streamlit_app.py
 ```
 
-Testes simulam respostas da IA e cobrem texto completo, páginas específicas por subtema, citações falsas, omissões, consolidação de sinônimos, divisão após truncamento, reaproveitamento e invalidação de cache, referências a anexos e fluxo da API. Execução com Groq e avaliação visual do Streamlit precisam das dependências completas e chave configuradas.
+Testes simulam respostas da IA e cobrem texto completo, páginas específicas por subtema, referências de linha inválidas, omissões, consolidação de sinônimos, divisão após truncamento, reaproveitamento e invalidação de cache, referências a anexos e fluxo da API. Execução com Groq e avaliação visual do Streamlit precisam das dependências completas e chave configuradas.
