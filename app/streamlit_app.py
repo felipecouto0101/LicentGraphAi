@@ -1,6 +1,8 @@
 """Etapa atual: organização e navegação do mapa, sem chat ou explicações."""
 import time
 import re
+import html
+from app.rag.source_display import evidence_blocks
 import requests
 import streamlit as st
 
@@ -140,19 +142,13 @@ def _subtopic_card(sub, organized):
         evidence = sub.get("evidence", [])
         if evidence:
             with st.expander("Conferir trechos de origem"):
-                shown = set()
-                for source in evidence:
-                    key = (source["page"], " ".join(source["quote"].split()).casefold())
-                    if key in shown:
-                        continue
-                    shown.add(key)
-                    st.caption(f"Página {source['page']}")
-                    st.write(source["quote"])
-        sources = sub.get("source_titles", [])
-        if sources:
-            with st.expander("Seções vinculadas no PDF"):
-                for title in sources:
-                    st.write(title)
+                for block in evidence_blocks(evidence):
+                    with st.container(border=True):
+                        st.caption(f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF")
+                        # Escape document content; preserve lists and paragraph spacing
+                        # using the interface font instead of rendering PDF text as Markdown.
+                        st.markdown('<div style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65">'
+                                    + html.escape(block["text"]) + '</div>', unsafe_allow_html=True)
 
 
 def _theme_label(title):
