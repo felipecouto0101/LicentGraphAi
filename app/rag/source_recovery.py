@@ -3,7 +3,7 @@ import re
 from .source_display import evidence_blocks
 
 _BOUNDARY = re.compile(
-    r'(?m)^[ \t]*(?:(?P<item>\d{1,3}(?:\.\d{1,3}){1,4})(?:[.)]?[ \t]+|(?=[A-Za-zÀ-ÿ]))'
+    r'(?m)^[ \t]*(?:(?P<item>\d{1,3}(?:\.\d{1,3}){1,4})(?:[.)]?[ \t]+(?![ \t]*[-–—])|(?=[A-Za-zÀ-ÿ]))'
     r'|\d{1,3}[.)]?[ \t]+(?=[A-ZÀ-Ý])|(?:ANEXO|CAP[ÍI]TULO|SE[ÇC][ÃA]O|CL[ÁA]USULA)\b)')
 
 
@@ -39,10 +39,13 @@ def _readable(text):
 
 
 class SourceRecovery:
-    def __init__(self, pages, chunks):
+    def __init__(self, pages, chunks, tables=None):
         self.pages = {i + 1: text for i, text in enumerate(pages)}
         self.index = {page: _indexed(text) for page, text in self.pages.items()}
-        self.boundaries = {page: list(_BOUNDARY.finditer(text)) for page, text in self.pages.items()}
+        self.tables = {i + 1: rows for i, rows in enumerate(tables or [])}
+        self.boundaries = {page: [match for match in _BOUNDARY.finditer(text)
+            if not any(t["start"] <= match.start() < t["end"] for t in self.tables.get(page, []))]
+            for page, text in self.pages.items()}
         self.chunks = {chunk['metadata']['chunk_id']: chunk for chunk in chunks}
         self.cache = {}
 
@@ -67,10 +70,14 @@ class SourceRecovery:
 
     def _ranges(self, page, start, end):
         text, boundaries = self.pages[page], self.boundaries[page]
+        table = next((t for t in self.tables.get(page, []) if t["start"] <= start < t["end"]), None)
+        if table:
+            return [(table["start"], table["end"], None, False)]
         ranges = []
         for i, boundary in enumerate(boundaries):
             left = boundary.start()
             right = boundaries[i + 1].start() if i + 1 < len(boundaries) else len(text)
+            right = min([right] + [t["start"] for t in self.tables.get(page, []) if left < t["start"]])
             if boundary.group('item') and left < end and right > start:
                 ranges.append((left, right, boundary.group('item'), True))
         if ranges and ranges[0][0] <= start:
@@ -103,10 +110,13 @@ class SourceRecovery:
                 if end - start > 12000:
                     start, end, item, numbered = *location, None, False
                 text = self.pages[evidence['page']][start:end].strip()
+                table = next((t for t in self.tables.get(evidence['page'], [])
+                              if t["start"] == start and t["end"] == end), None)
                 result.append({'page': evidence['page'], 'start': start, 'end': end,
+                    'table': table,
                     'item': item, 'text': _readable(text), 'expanded': True,
                     'source_ids': [evidence.get('source_id')],
-                    'context_status': 'clause_on_page' if numbered else 'paragraph',
+                    'context_status': 'table' if table else 'clause_on_page' if numbered else 'paragraph',
                     'continuation_pending': bool(numbered and end == len(self.pages[evidence['page']])
                                                   and not text.endswith(('.', ';', '!', '?')))})
         self.cache[key] = result
@@ -128,6 +138,20 @@ class SourceRecovery:
                             blocks[key]['source_ids'].extend(source for source in row['source_ids']
                                 if source not in blocks[key]['source_ids'])
                 sub['source_blocks'] = sorted(blocks.values(), key=lambda row: (row['page'], row['start']))
-                for block in evidence_blocks(fallback):
+                remaining, seen = [], set()
+                for evidence in fallback:
+                    page = evidence.get("page")
+                    quote = " ".join(evidence.get("quote", "").split())
+                    signature = (page, quote)
+                    normalized, positions = self.index.get(page, ("", []))
+                    matches = _matches(normalized, quote)
+                    # Hide ambiguous repeated selections only when every occurrence
+                    # is already represented by verified recovered page intervals.
+                    covered = bool(matches) and all(any(b["page"] == page and b["start"] <= positions[m]
+                        and positions[m + len(quote) - 1] < b["end"] for b in blocks.values()) for m in matches)
+                    if not covered and signature not in seen:
+                        remaining.append(evidence)
+                        seen.add(signature)
+                for block in evidence_blocks(remaining):
                     sub['source_blocks'].append({**block, 'context_status': 'selected_only', 'expanded': False})
         return topic_map
