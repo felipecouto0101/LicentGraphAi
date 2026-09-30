@@ -1,10 +1,12 @@
 """Descobre assuntos no texto completo e conserva evidências por subtema."""
 import hashlib
 import json
+import logging
 import re
 import unicodedata
 
-VERSION = 2
+logger = logging.getLogger(__name__)
+VERSION = 3
 
 
 def _key(title):
@@ -56,6 +58,13 @@ def _cache_key(stage, payload):
             sort_keys=True).encode()).hexdigest())
 
 
+def _source_lines(text):
+    """Linhas curtas e determinísticas: a IA seleciona índices, não copia citações."""
+    return [part.strip() for line in text.splitlines()
+            for offset in range(0, len(line), 160)
+            if (part := line[offset:offset + 160]).strip()]
+
+
 def _validate_extraction(parsed, batch):
     topics = parsed.get("topics") if isinstance(parsed, dict) else None
     if not isinstance(topics, list) or not topics:
@@ -74,19 +83,19 @@ def _validate_extraction(parsed, batch):
             if not isinstance(source, dict):
                 raise ValueError("Fonte inválida.")
             entry = entries.get(source.get("id")) if isinstance(source.get("id"), str) else None
-            quote = source.get("quote")
-            normalized = " ".join(entry["text"].split()).casefold() if entry else ""
-            normalized_quote = " ".join(quote.split()).casefold() if isinstance(quote, str) else ""
-            if (entry is None or not isinstance(quote, str) or not normalized_quote or len(quote.strip()) > 120
-                    or normalized_quote not in normalized
-                    or (len(normalized) >= 10 and len(quote.strip()) < 10)
-                    or (len(normalized) < 10 and normalized_quote != normalized)):
-                raise ValueError("Citação do subtema não aparece no trecho informado.")
+            lines = _source_lines(entry["text"]) if entry else []
+            chosen = source.get("lines")
+            if (entry is None or not isinstance(chosen, list) or not chosen
+                    or len(chosen) > 3 or not all(type(n) is int and 1 <= n <= len(lines) for n in chosen)
+                    or len(chosen) != len(set(chosen))):
+                raise ValueError("A IA indicou linhas ou IDs de fonte inexistentes.")
             covered.add(entry["id"])
-            evidence = {"source_id": entry["id"], "chunk_id": entry["chunk_id"],
-                        "page": entry["page"], "quote": quote.strip(), "source_titles": entry["section"]}
-            if evidence not in verified:
-                verified.append(evidence)
+            for number in chosen:
+                evidence = {"source_id": entry["id"], "chunk_id": entry["chunk_id"],
+                            "page": entry["page"], "line": number, "quote": lines[number - 1],
+                            "source_titles": entry["section"]}
+                if evidence not in verified:
+                    verified.append(evidence)
         result.append({"title": title, "theme": theme, "evidence": verified})
     if covered != set(entries):
         raise ValueError("A identificação omitiu trechos do PDF; lote não salvo.")
@@ -146,27 +155,48 @@ def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None):
         "Separe assuntos diferentes dentro da mesma seção (por exemplo, prazo e pagamento). "
         "Reúna cláusulas sobre o mesmo assunto sem transformar cada regra em um tópico. "
         "Não infira direitos, consequências ou condições ausentes. O nome deve descrever as fontes. "
-        "Para cada subtema inclua fontes com id do trecho e citação literal curta (10 a 120 caracteres). "
-        "Se o trecho inteiro tiver menos de 10 caracteres, cite-o inteiro. "
+        "Os textos estão em listas de linhas. Selecione de 1 a 3 números de linha por fonte, "
+        "contando a partir de 1 dentro de cada trecho. Não escreva nem reescreva citações. "
         "Vincule somente os trechos que realmente tratam daquele assunto; nunca uma seção inteira por herança. "
         "Cubra cada ID recebido com ao menos uma fonte. Trechos de cabeçalho/tabela também precisam ser identificados. "
         'Retorne apenas JSON: {"topics":[{"theme":"nome", "title":"subtema", '
-        '"sources":[{"id":"id", "quote":"citação literal"}]}]}.'
+        '"sources":[{"id":"id", "lines":[1]}]}.'
     )
     def extract(batch):
-        payload = {"passages": [{k: e[k] for k in ("id", "page", "section", "text")} for e in batch]}
+        payload = {"passages": [{"id": e["id"], "page": e["page"], "section": e["section"],
+                                  "lines": _source_lines(e["text"])} for e in batch]}
         key = _cache_key("extract", payload)
         if key in cache:
             return cache[key]
         try:
-            result = _validate_extraction(invoke(prompt, payload), batch)
+            try:
+                result = _validate_extraction(invoke(prompt, payload), batch)
+            except ValueError as exc:
+                # Uma correção explícita de formato/referências; depois reduz o lote.
+                logger.warning("Identificação: referência/formato inválido; tentando uma correção: %s", exc)
+                corrected = {**payload, "validation_error": str(exc)}
+                result = _validate_extraction(invoke(prompt + " Corrija o erro de validação informado; "
+                    "use exclusivamente IDs e números de linhas existentes.", corrected), batch)
         except Exception as exc:
-            if type(exc).__name__ not in {"GroqRequestTooLarge", "GroqOutputTruncated"} or len(batch) == 1:
+            oversized = type(exc).__name__ in {"GroqRequestTooLarge", "GroqOutputTruncated"}
+            if not oversized and not isinstance(exc, ValueError):
                 raise
-            middle = len(batch) // 2
-            result = extract(batch[:middle]) + extract(batch[middle:])
+            if len(batch) > 1:
+                logger.warning("Identificação: dividindo lote de %s trechos após %s", len(batch), type(exc).__name__)
+                middle = len(batch) // 2
+                result = extract(batch[:middle]) + extract(batch[middle:])
+            elif len(batch[0]["text"]) > 320:
+                entry = batch[0]
+                logger.warning("Identificação: dividindo texto do trecho %s (%s caracteres)", entry["id"], len(entry["text"]))
+                middle = len(entry["text"]) // 2
+                parts = [{**entry, "id": entry["id"] + f":{i}", "text": text}
+                         for i, text in enumerate((entry["text"][:middle], entry["text"][middle:])) if text.strip()]
+                result = sum((extract([part]) for part in parts), [])
+            else:
+                raise
         cache[key] = result
         return result
+
     topics = []
     for index, batch in enumerate(batches):
         if progress:
