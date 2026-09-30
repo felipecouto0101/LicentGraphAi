@@ -118,6 +118,7 @@ class Node1ReaderChunker:
             "full_text": full_text,
             "page_count": page_count,
             "pages_text": list(pages),
+            "pages_tables": getattr(self.pdf_reader, "pages_tables", []),
             "chunks": all_chunks,
             "total_chunks": len(all_chunks),
             "processing_method": ("document_structure" if self.preserve_document_structure
