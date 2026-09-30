@@ -16,7 +16,7 @@ class PDFReader:
         self.text: str = ""
         self.pages_text: list[str] = []
 
-    def load_pdf(self, pdf_path: str) -> str:
+    def load_pdf(self, pdf_path: str, preserve_lines: bool = False) -> str:
         """
         Carrega um arquivo PDF e extrai todo o texto.
 
@@ -39,7 +39,7 @@ class PDFReader:
             # Preserva o índice original, inclusive páginas sem texto extraível.
             with pdfplumber.open(self.pdf_path) as pdf:
                 self.pages_text = [
-                    self._clean_text(page.extract_text() or "")
+                    self._clean_text(page.extract_text() or "", preserve_lines=preserve_lines)
                     for page in pdf.pages
                 ]
 
@@ -50,7 +50,7 @@ class PDFReader:
             raise PDFReadError(f"Erro ao ler PDF: {e!s}")
 
     @staticmethod
-    def _clean_text(text: str) -> str:
+    def _clean_text(text: str, preserve_lines: bool = False) -> str:
         """
         Limpa o texto extraído do PDF.
 
@@ -65,7 +65,8 @@ class PDFReader:
 
         # 2. Normalizar quebras de linha: 2+ quebras viram parágrafo, 1 vira espaço
         text = re.sub(r"\n{3,}", "\n\n", text)          # 3+ \n → parágrafo
-        text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)    # \n isolado → espaço
+        if not preserve_lines:
+            text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
 
         # 3. Normalizar espaços múltiplos
         text = re.sub(r"[ \t]{2,}", " ", text)
