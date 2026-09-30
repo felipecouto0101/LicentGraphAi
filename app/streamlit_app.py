@@ -44,6 +44,7 @@ def _prepare(api_url: str, file):
     st.session_state.pop("result", None)
     st.session_state.pop("conversation", None)
     st.session_state.pop("selected_topic", None)
+    st.session_state.pop("topic_search", None)
     try:
         response = requests.post(
             f"{api_url}/analyze/upload",
@@ -71,6 +72,14 @@ def _poll(api_url: str, job_id: str):
         st.rerun()
         return
     if data["status"] == "done":
+        result = data.get("result") or {}
+        if result.get("map_version") != 2 or not result.get("topic_map"):
+            st.error("A API retornou um mapa antigo ou incompleto. Atualize e reinicie "
+                     "o backend e crie o mapa novamente com o PDF.")
+            if st.button("Voltar ao envio do PDF"):
+                st.session_state.pop("job_id", None)
+                st.rerun()
+            return
         st.session_state["result"] = data["result"]
         st.rerun()
     if data["status"] == "error":
@@ -87,6 +96,9 @@ def _poll(api_url: str, job_id: str):
 
 def _topic_browser(api_url: str, job_id: str, result: dict):
     themes = result.get("topic_map") or []
+    if not themes:
+        st.error("Nenhum tema foi recebido. Crie o mapa novamente a partir do PDF.")
+        return
     subtopics = {sub["id"]: (theme, sub) for theme in themes
                  for sub in theme.get("subtopics", [])}
     st.caption(f"{len(themes)} temas · {len(subtopics)} subtemas · "
@@ -95,15 +107,18 @@ def _topic_browser(api_url: str, job_id: str, result: dict):
     left, right = st.columns([1, 2], gap="large")
     with left:
         st.subheader("Mapa de assuntos")
-        search = st.text_input("Encontrar um assunto", placeholder="Ex.: habilitação, prazo, proposta")
+        search = st.text_input("Encontrar um assunto", placeholder="Ex.: habilitação, prazo, proposta",
+                               key="topic_search")
         visible = 0
         for theme in themes:
             children = [sub for sub in theme["subtopics"]
-                        if not search or search.casefold() in (theme["title"] + " " + sub["title"]).casefold()]
+                        if not search or search.casefold() in (theme["title"] + " " + sub["title"]
+                        + " " + theme.get("display_title", "") + " " + sub.get("display_title", "")).casefold()]
             if not children:
                 continue
             visible += len(children)
-            with st.expander(f"{theme.get('display_title', theme['title'])} · {len(children)}", expanded=bool(search)):
+            with st.expander(f"{theme.get('display_title', theme['title'])} · {len(children)}",
+                             expanded=bool(search) or len(themes) <= 10):
                 if theme.get("display_title") and theme["display_title"] != theme["title"]:
                     st.caption(f"Título no PDF: {theme['title']}")
                 if st.button("Organizar nomes com IA", key=f"rename-{theme['id']}"):
@@ -163,6 +178,11 @@ def _topic_browser(api_url: str, job_id: str, result: dict):
 def main():
     st.title("🧭 LicitGraphAi")
     st.write("Navegue pelos assuntos do edital. Peça explicações apenas sobre o que interessa a você.")
+    stored = st.session_state.get("result")
+    if stored and stored.get("map_version") != 2:
+        for key in ("result", "job_id", "selected_topic", "conversation", "topic_search"):
+            st.session_state.pop(key, None)
+        st.info("A identificação dos temas foi atualizada. Envie o PDF para reconstruir o mapa.")
     api_url = st.sidebar.text_input("URL da API", value=API_URL).rstrip("/")
     try:
         status = requests.get(f"{api_url}/status", timeout=3).json()
