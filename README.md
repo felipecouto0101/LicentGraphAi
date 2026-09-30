@@ -169,3 +169,11 @@ Códigos numéricos seguidos de hífen, como códigos de cargos, não são trata
 Foi conferido o PDF UFBA: páginas 13–15 têm nove regiões tabulares detectadas, incluindo a continuação da tabela 10.7. A extração usa pdfplumber já instalado e não exige chamada à IA. Tabelas sem geometria detectável, imagens e PDFs com diagramação irregular ainda podem exigir conferência do PDF original; isso não implementa OCR nem garante extração perfeita. Reinicie e reenvie o documento para incluir os novos metadados de tabelas.
 
 Teste: `python -m unittest discover -s tests -p 'test_pdf_tables.py' -v`.
+
+### Falsas tabelas e continuações entre páginas
+
+A presença de uma grade detectada não basta para apresentar uma tabela: o leitor rejeita blocos de uma coluna e layouts compostos por números de cláusulas e prosa longa. Isso evita transformar alinhamentos de parágrafos em tabelas sem sentido. O filtro é conservador e pode exigir conferência em documentos com layouts incomuns.
+
+Itens numerados que terminam sem fechar a frase podem recuperar sua continuação no começo da página seguinte quando há sinais compatíveis, sem cabeçalho ou tabela intermediária. O bloco mantém o número do item e as duas páginas, remove rodapés identificados e termina antes do próximo item. Não corrige maiúsculas nem reescreve o PDF: restaura o começo da frase quando consegue confirmar essa ligação. Quando os sinais não são suficientes, mantém os trechos separados e o aviso.
+
+Tabelas em páginas adjacentes podem ser vinculadas se as grades estiverem nas bordas das páginas, as colunas e larguras forem compatíveis e não houver novo título de tabela. As partes continuam em blocos por página, sem inventar valores em células vazias. Selecionar uma das partes também recupera as demais partes vinculadas. No PDF UFBA, a tabela 2.1 tem os cargos 201–205 na primeira página e continua com 206, 207 e cargos de nível superior na segunda página. O item 22.12 começa na página 33 e termina na 34; as falsas tabelas dessas páginas foram rejeitadas em conferência local.
