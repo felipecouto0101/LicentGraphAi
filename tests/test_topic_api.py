@@ -59,7 +59,8 @@ class APITests(unittest.TestCase):
     def test_preparation_uses_ai_organization_without_embeddings(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
-            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4,
+                "pages_text": ["", "", "", self.chunk["content"]]})
         node3 = types.ModuleType("app.rag.node_3_analyzer")
         class Analyzer:
             calls = []
@@ -89,13 +90,16 @@ class APITests(unittest.TestCase):
         self.assertEqual(result["topic_map"][0]["title"], "Documentos para participar")
         self.assertEqual(result["topic_map"][0]["subtopics"][0]["chunk_ids"], [1])
         self.assertEqual(len(Analyzer.calls), 2)
+        self.assertEqual(result["topic_map"][0]["subtopics"][0]["source_blocks"][0]["page"], 4)
+        self.assertEqual(result["topic_map"][0]["subtopics"][0]["source_blocks"][0]["text"], self.chunk["content"])
         self.assertEqual(self.api._jobs["job"]["progress"]["completed"], 1)
         self.assertFalse(hasattr(self.api, "ask_about_edital"))
 
     def test_gemini_upload_organizes_without_groq_and_publishes_activity(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kw: types.SimpleNamespace(
-            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4,
+                "pages_text": ["", "", "", self.chunk["content"]]})
         events = []
         class Gemini:
             def __init__(self, progress): self.progress = progress
@@ -122,7 +126,8 @@ class APITests(unittest.TestCase):
     def test_organization_failure_keeps_structural_index(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
-            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4,
+                "pages_text": ["", "", "", self.chunk["content"]]})
         with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1}), patch.object(
                 self.api, "validate_analysis_configuration", side_effect=ValueError("Cota indisponível")):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
@@ -136,7 +141,8 @@ class APITests(unittest.TestCase):
     def test_grouping_failure_displays_validated_subtopics_as_partial_map(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
-            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4,
+                "pages_text": ["", "", "", self.chunk["content"]]})
         node3 = types.ModuleType("app.rag.node_3_analyzer")
         class Analyzer:
             def __init__(self, **kw): pass
