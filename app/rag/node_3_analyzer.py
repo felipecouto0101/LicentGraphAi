@@ -111,7 +111,7 @@ class Node3RequirementAnalyzer:
         # GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, ...
         for suffix in ["", "_2", "_3", "_4", "_5"]:
             k = os.getenv(f"GROQ_API_KEY{suffix}", "").strip()
-            if k and k != "your_groq_api_key_here":
+            if k and k != "your_groq_api_key_here" and k not in keys:
                 keys.append(k)
         if not keys and self.api_key:
             keys.append(self.api_key)
@@ -144,6 +144,85 @@ class Node3RequirementAnalyzer:
         self.llm = self._make_llm(self._api_keys[next_idx])
         logger.warning(f"Rotacionando para chave {next_idx + 1}/{len(self._api_keys)}")
         return True
+
+    def _independent_accounts(self) -> bool:
+        # Ative apenas para chaves de organizações diferentes: a Groq compartilha
+        # os limites entre todas as chaves de uma mesma organização.
+        return (os.getenv("GROQ_INDEPENDENT_ACCOUNTS", "false").lower() == "true"
+                and len(getattr(self, "_api_keys", [])) > 1)
+
+    def _save_account(self):
+        states = getattr(self, "_account_states", None)
+        if states is None:
+            states = self._account_states = {}
+        state = states.setdefault(self._current_key_idx, {})
+        state.update(quota=getattr(self, "_quota", {}),
+                     calls=getattr(self, "_request_times", deque()),
+                     output_cap=getattr(self, "_output_token_cap", 950),
+                     rpm=getattr(self, "_rpm_budget_override", 10))
+        return state
+
+    def _activate_account(self, index):
+        if index == self._current_key_idx:
+            return
+        self._save_account()
+        state = self._account_states.setdefault(index, {
+            "quota": {}, "calls": deque(),
+            "output_cap": max(1, int(os.getenv("GROQ_OUTPUT_TOKEN_BUDGET", "950"))),
+            "rpm": 1 if self._output_budget() <= 1000 else 10,
+        })
+        self._current_key_idx = index
+        self._quota, self._request_times = state["quota"], state["calls"]
+        self._output_token_cap, self._rpm_budget_override = state["output_cap"], state["rpm"]
+        self.llm = self._make_llm(self._api_keys[index])
+        logger.info("Groq: usando conta %s/%s", index + 1, len(self._api_keys))
+
+    def _select_available_account(self, messages):
+        """Usa outra organização antes de esperar; preserva a atual se disponível."""
+        self._save_account()
+        while True:
+            now = time.monotonic()
+            candidates = []
+            oversized = 0
+            for offset in range(len(self._api_keys)):
+                index = (self._current_key_idx + offset) % len(self._api_keys)
+                state = self._account_states.setdefault(index, {
+                    "quota": {}, "calls": deque(),
+                    "output_cap": max(1, int(os.getenv("GROQ_OUTPUT_TOKEN_BUDGET", "950"))),
+                    "rpm": 1 if self._output_budget() <= 1000 else 10,
+                })
+                quota, calls = state["quota"], state["calls"]
+                for kind in ("tokens", "requests"):
+                    if quota.get(kind + "_reset_at", float("inf")) <= now:
+                        quota.pop(kind + "_remaining", None)
+                        quota.pop(kind + "_reset_at", None)
+                estimated = sum((len(str(getattr(m, "content", m))) + 2) // 3 + 8
+                                for m in messages) + min(self.max_tokens, state["output_cap"])
+                if quota.get("tokens_limit") and estimated > quota["tokens_limit"]:
+                    oversized += 1
+                    continue
+                ready = state.get("cooldown_until", 0)
+                if quota.get("requests_remaining") == 0:
+                    ready = max(ready, quota.get("requests_reset_at", float("inf")))
+                if quota.get("tokens_remaining", estimated) < estimated:
+                    ready = max(ready, quota.setdefault("tokens_reset_at", now + 60) + 1)
+                while calls and now - calls[0] >= 60:
+                    calls.popleft()
+                rpm = min(max(1, int(os.getenv("GROQ_RPM_BUDGET", "10"))), state["rpm"])
+                if len(calls) >= rpm:
+                    ready = max(ready, calls[0] + 61)
+                if ready <= now:
+                    self._activate_account(index)
+                    return
+                candidates.append(ready)
+            if oversized == len(self._api_keys):
+                raise GroqRequestTooLarge("Pedido excede a cota de tokens das contas disponíveis.")
+            wait = min(candidates, default=float("inf")) - now
+            if wait > 300:
+                raise RuntimeError("Groq: nenhuma conta disponível neste momento; "
+                                   "retome depois. O checkpoint continua salvo.")
+            logger.info("Groq: todas as contas em espera; próxima janela em %.0fs", wait)
+            time.sleep(min(60, max(1, wait)))
 
     @staticmethod
     def _rate_limit_wait(error: Exception) -> float:
@@ -211,7 +290,8 @@ class Node3RequirementAnalyzer:
             if reset is not None:
                 quota[f"{kind}_reset_at"] = now + reset
         if "tokens_remaining" in quota or "requests_remaining" in quota:
-            logger.info("Cota Groq: tokens/min restantes=%s; requisições/dia restantes=%s",
+            logger.info("Cota Groq (chave %s): tokens/min restantes=%s; requisições/dia restantes=%s",
+                        getattr(self, "_current_key_idx", 0) + 1,
                         quota.get("tokens_remaining", "?"),
                         quota.get("requests_remaining", "?"))
 
@@ -311,9 +391,14 @@ class Node3RequirementAnalyzer:
         """
         rate_limit_failures = 0
         transient_failures = 0
+        failures_by_account = {}
         while True:
             try:
-                self._before_groq_request(messages, enforce_rpm=rate_limit_failures == 0)
+                if self._independent_accounts():
+                    self._select_available_account(messages)
+                    rate_limit_failures = failures_by_account.get(self._current_key_idx, 0)
+                self._before_groq_request(messages, enforce_rpm=(
+                    self._independent_accounts() or rate_limit_failures == 0))
                 return self._invoke_groq(messages)
             except Exception as e:
                 self._record_quota(getattr(getattr(e, "response", None), "headers", None))
@@ -369,7 +454,13 @@ class Node3RequirementAnalyzer:
                     if is_daily_limit:
                         # Limite diário esgotado — tenta próxima chave
                         logger.warning(f"Chave {self._current_key_idx + 1} esgotou limite diário.")
-                        if not self._rotate_key():
+                        if self._independent_accounts():
+                            state = self._save_account()
+                            state["quota"]["requests_remaining"] = 0
+                            # Um limite diário de tokens também torna a conta indisponível.
+                            state["quota"]["requests_reset_at"] = time.monotonic() + max(
+                                301, self._rate_limit_wait(e))
+                        elif not self._rotate_key():
                             raise RuntimeError(
                                 "Groq: cota diária esgotada nas chaves configuradas; "
                                 "a análise pode ser retomada a partir do checkpoint."
@@ -402,9 +493,14 @@ class Node3RequirementAnalyzer:
                                 "(429). Retome a análise depois desse prazo; "
                                 "o checkpoint continua salvo."
                             ) from e
-                        logger.warning("Limite de uso da Groq (429). Aguardando %.0fs...", wait_secs)
+                        logger.warning("Groq: conta atual indisponível por %.0fs%s", wait_secs,
+                                       "; verificando outras contas" if self._independent_accounts() else "")
                         rate_limit_failures += 1
-                        time.sleep(wait_secs)
+                        if self._independent_accounts():
+                            failures_by_account[self._current_key_idx] = rate_limit_failures
+                            self._save_account()["cooldown_until"] = time.monotonic() + wait_secs
+                        else:
+                            time.sleep(wait_secs)
                         continue
                 else:
                     status = getattr(e, "status_code", None)
