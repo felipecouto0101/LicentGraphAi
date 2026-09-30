@@ -56,81 +56,61 @@ class APITests(unittest.TestCase):
         self.chunk = {"content": "O licitante deve apresentar atestado de capacidade técnica.",
                       "metadata": {"page": 4, "chunk_id": 1}}
 
-    def test_index_does_not_call_llm(self):
+    def test_preparation_uses_ai_organization_without_embeddings(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
-            process_pdf=lambda path: {"chunks": [self.chunk]})
-        node2 = types.ModuleType("app.rag.node_2_embeddings")
-        class Indexer:
-            embeddings = types.SimpleNamespace(encode=lambda self, titles: [[1., 0.] for _ in titles])
-            def process_chunks(self, chunks, **kwargs): return {"collection_id": "collection"}
-        node2.Node2EmbeddingGenerator = Indexer
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+        node3 = types.ModuleType("app.rag.node_3_analyzer")
+        class Analyzer:
+            calls = []
+            def __init__(self, **kw): pass
+            def _invoke_with_rotation(self, messages):
+                self.calls.append(json.loads(messages[1].content))
+                if "sections" in self.calls[-1]:
+                    source = self.calls[-1]["sections"][0]["id"]
+                    output = {"themes": [{"title": "Documentação", "subtopics": [
+                        {"title": "Capacidade técnica", "source_ids": [source]}]}]}
+                else:
+                    output = {"themes": [{"title": "Documentos para participar", "source_ids": ["0"]}]}
+                return types.SimpleNamespace(content=json.dumps(output))
+            _parse_llm_json = staticmethod(json.loads)
+        node3.Node3RequirementAnalyzer = Analyzer
+        messages = types.ModuleType("langchain_core.messages")
+        messages.SystemMessage = messages.HumanMessage = lambda content: types.SimpleNamespace(content=content)
         with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1,
-                                      "app.rag.node_2_embeddings": node2}):
+                "app.rag.node_3_analyzer": node3, "langchain_core": types.ModuleType("langchain_core"),
+                "langchain_core.messages": messages}):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
             self.api._run_topic_job("job", "edital.pdf")
+        result = self.api._jobs["job"]["result"]
+        self.assertEqual(result["map_version"], 3)
+        self.assertEqual(result["organization_status"], "done")
+        self.assertEqual(result["topic_map"][0]["title"], "Documentos para participar")
+        self.assertEqual(result["topic_map"][0]["subtopics"][0]["chunk_ids"], [1])
+        self.assertEqual(len(Analyzer.calls), 2)
+        self.assertEqual(self.api._jobs["job"]["progress"]["completed"], 2)
+        self.assertFalse(hasattr(self.api, "ask_about_edital"))
+
+    def test_organization_failure_keeps_structural_index(self):
+        node1 = types.ModuleType("app.rag.node_1_reader_chunker")
+        node1.Node1ReaderChunker = lambda **kwargs: types.SimpleNamespace(
+            process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4})
+        with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1}), patch.object(
+                self.api, "validate_analysis_configuration", side_effect=ValueError("Cota indisponível")):
+            self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
+            self.api._run_topic_job("job", "edital.pdf")
+        result = self.api._jobs["job"]["result"]
         self.assertEqual(self.api._jobs["job"]["status"], "done")
-        self.assertEqual(self.api._jobs["job"]["result"]["chunks_count"], 1)
-        self.assertEqual(self.api._jobs["job"]["result"]["map_version"], 2)
-        self.assertEqual(self.api._documents["job"]["topics"][0]["subtopics"][0]["chunk_ids"], [1])
-        self.assertIsNone(self.api._documents["job"]["llm"])
+        self.assertEqual(result["organization_status"], "error")
+        self.assertIn("Cota indisponível", result["organization_error"])
+        self.assertEqual(result["topic_map"][0]["subtopics"][0]["chunk_ids"], [1])
 
-    def test_chat_rejects_wrong_page_and_returns_verified_quote(self):
-        node3 = types.ModuleType("app.rag.node_3_analyzer")
-        class Analyzer:
-            output = None
-            def __init__(self, **kw): pass
-            def _invoke_with_rotation(self, messages):
-                return types.SimpleNamespace(content=json.dumps(self.output))
-            _parse_llm_json = staticmethod(json.loads)
-        node3.Node3RequirementAnalyzer = Analyzer
-        messages = types.ModuleType("langchain_core.messages")
-        messages.SystemMessage = messages.HumanMessage = lambda content: types.SimpleNamespace(content=content)
-        llc = types.ModuleType("langchain_core")
-        self.api._documents["job"] = {"chunks": [self.chunk], "topics": [self.topic],
-                                      "collection": "collection", "lock": threading.Lock(), "llm": None}
-        q = self.api.TopicQuestion(topic_id="subtema-1", question="Qual atestado é necessário?")
-        with patch.dict(sys.modules, {"app.rag.node_3_analyzer": node3,
-                                      "langchain_core": llc, "langchain_core.messages": messages}):
-            Analyzer.output = {"found": True, "answer": "Apresente atestado de capacidade técnica.",
-                               "citations": [{"page": 99, "quote": "atestado de capacidade técnica"}]}
-            with self.assertRaises(self.api.HTTPException) as error:
-                self.api.ask_about_edital("job", q)
-            self.assertEqual(error.exception.status_code, 502)
-            Analyzer.output["citations"][0]["page"] = 4
-            result = self.api.ask_about_edital("job", q)
-            self.assertTrue(result["found"])
-            self.assertEqual(result["citations"][0]["page"], 4)
-
-    def test_ai_names_preserve_ids_and_original_titles(self):
-        node3 = types.ModuleType("app.rag.node_3_analyzer")
-        class Analyzer:
-            output = None
-            def __init__(self, **kw): pass
-            def _invoke_with_rotation(self, messages):
-                return types.SimpleNamespace(content=json.dumps(self.output))
-            _parse_llm_json = staticmethod(json.loads)
-        node3.Node3RequirementAnalyzer = Analyzer
-        messages = types.ModuleType("langchain_core.messages")
-        messages.SystemMessage = messages.HumanMessage = lambda content: types.SimpleNamespace(content=content)
-        session = {"chunks": [self.chunk], "topics": [self.topic],
-                   "collection": "collection", "lock": threading.Lock(), "llm": None}
-        self.api._documents["job"] = session
-        self.api._jobs["job"] = {"result": {"topic_map": session["topics"]}}
-        with patch.dict(sys.modules, {"app.rag.node_3_analyzer": node3,
-                                      "langchain_core": types.ModuleType("langchain_core"),
-                                      "langchain_core.messages": messages}):
-            Analyzer.output = {"theme_label": "Participação na licitação", "subtopics": []}
-            with self.assertRaises(self.api.HTTPException) as error:
-                self.api.improve_topic_names("job", self.api.TopicRename(theme_id="tema-1"))
-            self.assertEqual(error.exception.status_code, 502)
-            self.assertNotIn("display_title", self.topic)
-            Analyzer.output["subtopics"] = [{"id": "subtema-1", "label": "O que apresentar"}]
-            result = self.api.improve_topic_names("job", self.api.TopicRename(theme_id="tema-1"))
-            self.assertEqual(result["topic_map"][0]["display_title"], "Participação na licitação")
-            self.assertEqual(self.topic["title"], "Habilitação")
-            self.assertEqual(self.topic["subtopics"][0]["id"], "subtema-1")
-            self.assertEqual(self.topic["subtopics"][0]["pages"], [4])
+    def test_retry_refuses_concurrent_organization(self):
+        self.api._jobs["job"] = {"status": "running", "result": {}}
+        self.api._documents["job"] = {}
+        with self.assertRaises(self.api.HTTPException) as error:
+            self.api.retry_map_organization("job")
+        self.assertEqual(error.exception.status_code, 409)
 
 
 if __name__ == "__main__":
