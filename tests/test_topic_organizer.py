@@ -14,7 +14,7 @@ class OrganizerTests(unittest.TestCase):
     def reply(self, system, payload):
         if "passages" in payload:
             return {"topics": [{"theme": "Inscrição", "title": "Condições para inscrição", "sources": [
-                {"id": e["id"], "quote": e["text"][:80]} for e in payload["passages"]]}]}
+                {"id": e["id"], "lines": [1]} for e in payload["passages"]]}]}
         return {"themes": [{"title": "Inscrição no programa", "subtopics": [
             {"title": "Condições para inscrição", "source_ids": [e["id"] for e in payload["topics"]]}]}]}
 
@@ -34,15 +34,18 @@ class OrganizerTests(unittest.TestCase):
         self.assertEqual(self.topics[0]["title"], "Título formal")
         self.assertEqual(progress[-1]["completed"], progress[-1]["total"])
 
-    def test_missing_unknown_or_false_citation_rejected_before_cache(self):
-        for source in ({"id": "inventado", "quote": "Texto completo do documento"},
-                       {"id": "c0-0", "quote": "Esta citação não existe no texto"},
-                       {"id": "c0-0", "quote": "Texto completo do documento"}):
+    def test_missing_or_invalid_lines_rejected_without_saving_invalid_result(self):
+        for source in ({"id": "inventado", "lines": [1]},
+                       {"id": "c0-0", "lines": [999]},
+                       {"id": "c0-0", "lines": [1]}):
             cache = {}
             with self.assertRaises(ValueError):
                 organize_topic_map(self.topics, self.chunks, lambda *args: {"topics": [
                     {"theme": "Participação", "title": "Inscrição", "sources": [source]}]}, cache=cache)
-            self.assertEqual(cache, {})
+            if source["id"] == "c0-0" and source["lines"] == [1]:
+                self.assertTrue(cache)  # Parte válida pode ser preservada antes da omissão.
+            else:
+                self.assertEqual(cache, {})
 
     def test_retry_reuses_verified_batches_and_changed_text_invalidates_cache(self):
         cache, calls = {}, []
@@ -103,7 +106,7 @@ class OrganizerTests(unittest.TestCase):
         def invoke(system, payload):
             if "passages" in payload:
                 return {"topics": [{"theme": "Inscrições", "title": "Pagamento" if e["page"] == 2 else "Nome social",
-                    "sources": [{"id": e["id"], "quote": e["text"]}]} for e in payload["passages"]]}
+                    "sources": [{"id": e["id"], "lines": [1]}]} for e in payload["passages"]]}
             return {"themes": [{"title": "Inscrições", "subtopics": [
                 {"title": e["title"], "source_ids": [e["id"]]} for e in payload["topics"]]}]}
         result = organize_topic_map(structural, chunks, invoke)
@@ -115,7 +118,7 @@ class OrganizerTests(unittest.TestCase):
         def invoke(system, payload):
             if "passages" in payload:
                 return {"topics": [{"theme": "Inscrição", "title": "Pagamento da taxa" if i % 2 else "Taxa de inscrição",
-                    "sources": [{"id": e["id"], "quote": e["text"]}]} for i,e in enumerate(payload["passages"])]}
+                    "sources": [{"id": e["id"], "lines": [1]}]} for i,e in enumerate(payload["passages"])]}
             return {"themes": [{"title": "Inscrições", "subtopics": [
                 {"title": "Taxa e pagamento", "source_ids": [e["id"] for e in payload["topics"]]}]}]}
         result = organize_topic_map(self.topics, self.chunks, invoke)
@@ -131,7 +134,7 @@ class OrganizerTests(unittest.TestCase):
         def invoke(system, payload):
             if "passages" in payload:
                 return {"topics": [{"theme": "Grupo " + e["id"], "title": "Assunto " + e["id"],
-                    "sources": [{"id": e["id"], "quote": e["text"]}]} for e in payload["passages"]]}
+                    "sources": [{"id": e["id"], "lines": [1]}]} for e in payload["passages"]]}
             if all(e["theme"] == "Temas do documento" for e in payload["topics"]):
                 return {"themes": [{"title": "Assuntos relacionados", "subtopics": [
                     {"title": "Grupo reunido", "source_ids": [e["id"] for e in payload["topics"]]}]}]}
@@ -141,6 +144,36 @@ class OrganizerTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(len(result[0]["subtopics"]), 16)
         self.assertEqual(all_chunk_ids(result), set(range(16)))
+
+    def test_invalid_line_can_be_corrected_without_repeating_valid_batches(self):
+        calls = []
+        def invoke(system, payload):
+            calls.append(payload)
+            result = self.reply(system, payload)
+            if len(calls) == 1:
+                result["topics"][0]["sources"][0]["lines"] = [999]
+            return result
+        result = organize_topic_map(self.topics, self.chunks, invoke)
+        self.assertIn("validation_error", calls[1])
+        self.assertEqual(all_chunk_ids(result), set(range(16)))
+        for theme in result:
+            for sub in theme["subtopics"]:
+                for evidence in sub["evidence"]:
+                    self.assertIn(evidence["quote"], self.chunks[evidence["chunk_id"]]["content"])
+
+    def test_single_truncated_passage_splits_text_and_preserves_sources(self):
+        class GroqOutputTruncated(RuntimeError): pass
+        self.chunks = [{"content": "Conteúdo integral do edital. " * 20,
+                        "metadata": {"page": 1, "chunk_id": 0}}]
+        def invoke(system, payload):
+            if "passages" in payload and sum(len(line) for line in payload["passages"][0]["lines"]) > 320:
+                raise GroqOutputTruncated()
+            return self.reply(system, payload)
+        result = organize_topic_map(self.topics, self.chunks, invoke)
+        self.assertEqual(all_chunk_ids(result), {0})
+        sub = result[0]["subtopics"][0]
+        self.assertEqual(len(sub["source_ids"]), 2)
+        self.assertTrue(all(e["quote"] in self.chunks[0]["content"] for e in sub["evidence"]))
 
     def test_annex_mentions_are_not_treated_as_present_annexes(self):
         chunks = [{"content": "Ver Anexos I e II deste edital. Cronograma no Anexo III.", "metadata": {"page": 1}},
