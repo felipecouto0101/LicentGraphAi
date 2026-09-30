@@ -48,7 +48,7 @@ python -m streamlit run app/streamlit_app.py
 | Streamlit | Exibe o mapa, busca de assuntos, páginas e conversa. |
 | LangGraph | Permanece no código do fluxo completo anterior (`app/rag/langgraph_workflow.py`); o fluxo rápido do mapa usa apenas leitura, indexação e consultas sob demanda. |
 
-O índice inicial é construído a partir de cabeçalhos observáveis e trechos do PDF. Títulos semanticamente próximos podem ser agrupados, com seus subtemas e fontes preservados. Títulos genéricos ou sem cabeçalho permanecem visíveis para evitar descartar texto. **A Groq não é chamada durante a criação do mapa.** Um clique para organizar nomes usa uma chamada apenas para os nomes daquele tema; a explicação usa uma chamada sobre trechos recuperados quando solicitada.
+O índice inicial preserva as linhas do PDF, identifica seções antes de fragmentar o texto e mantém a sequência das páginas. Títulos quebrados em linhas são reunidos; entradas do sumário não criam novos assuntos. Cláusulas de anexos aparecem como subtemas. Títulos semanticamente próximos podem ser agrupados, com seus subtemas e fontes preservados. Títulos genéricos ou sem cabeçalho permanecem visíveis para evitar descartar texto. **A Groq não é chamada durante a criação do mapa.** Um clique para organizar nomes usa uma chamada apenas para os nomes daquele tema; a explicação usa uma chamada sobre trechos recuperados quando solicitada.
 
 O fluxo LangGraph completo anterior permanece acessível pela API em `POST /analyze/full`, fora da interface do mapa. Ele mantém sua extração, checklist e checkpoints antigos.
 
@@ -56,7 +56,7 @@ O endpoint `POST /analyze/upload` retorna um `job_id`; `GET /job/{job_id}` infor
 
 ## Limites e custo de chamadas
 
-A antiga extração em lotes e as centenas de explicações individuais **não são executadas pela interface do mapa**. Os arquivos antigos em `data/checkpoints/` não são apagados, mas o mapa rápido é reconstruído diretamente do PDF e não reaproveita as explicações antigas. A interface nova não apresenta o checklist de documentos do fluxo antigo; consulte o edital para uma conferência exaustiva.
+A antiga extração em lotes e as centenas de explicações individuais **não são executadas pela interface do mapa**. Os arquivos antigos em `data/checkpoints/` não são apagados, mas o mapa rápido é reconstruído diretamente do PDF e não reaproveita as explicações antigas. Após atualizar a identificação de temas, reinicie a API e o Streamlit e envie novamente o PDF; mapas da versão anterior são recusados pela interface. A interface nova não apresenta o checklist de documentos do fluxo antigo; consulte o edital para uma conferência exaustiva.
 
 A Groq informou um limite de 1.000 tokens de saída por minuto no cenário testado. O Nó 3 usa `GROQ_OUTPUT_TOKEN_BUDGET=950` por padrão e pode esperar aproximadamente um minuto entre perguntas seguidas. Agora esse custo só ocorre nos assuntos abertos pelo usuário. Outras cotas e a velocidade do modelo variam por conta e horário. A primeira indexação pode demorar pelo carregamento do modelo local; no PDF observado, a geração de 163 embeddings levou cerca de 14 segundos depois do carregamento. Isso não é uma garantia para outros PDFs ou computadores.
 
