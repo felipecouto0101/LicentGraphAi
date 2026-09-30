@@ -66,12 +66,13 @@ class APITests(unittest.TestCase):
             def __init__(self, **kw): pass
             def _invoke_with_rotation(self, messages):
                 self.calls.append(json.loads(messages[1].content))
-                if "sections" in self.calls[-1]:
-                    source = self.calls[-1]["sections"][0]["id"]
-                    output = {"themes": [{"title": "Documentação", "subtopics": [
-                        {"title": "Capacidade técnica", "source_ids": [source]}]}]}
+                if "passages" in self.calls[-1]:
+                    entry = self.calls[-1]["passages"][0]
+                    output = {"topics": [{"theme": "Documentação", "title": "Capacidade técnica",
+                        "sources": [{"id": entry["id"], "quote": entry["text"][:80]}]}]}
                 else:
-                    output = {"themes": [{"title": "Documentos para participar", "source_ids": ["0"]}]}
+                    output = {"themes": [{"title": "Documentos para participar", "subtopics": [
+                        {"title": "Capacidade técnica", "source_ids": ["0"]}]}]}
                 return types.SimpleNamespace(content=json.dumps(output))
             _parse_llm_json = staticmethod(json.loads)
         node3.Node3RequirementAnalyzer = Analyzer
@@ -83,12 +84,12 @@ class APITests(unittest.TestCase):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
             self.api._run_topic_job("job", "edital.pdf")
         result = self.api._jobs["job"]["result"]
-        self.assertEqual(result["map_version"], 3)
+        self.assertEqual(result["map_version"], 4)
         self.assertEqual(result["organization_status"], "done")
         self.assertEqual(result["topic_map"][0]["title"], "Documentos para participar")
         self.assertEqual(result["topic_map"][0]["subtopics"][0]["chunk_ids"], [1])
         self.assertEqual(len(Analyzer.calls), 2)
-        self.assertEqual(self.api._jobs["job"]["progress"]["completed"], 2)
+        self.assertEqual(self.api._jobs["job"]["progress"]["completed"], 1)
         self.assertFalse(hasattr(self.api, "ask_about_edital"))
 
     def test_organization_failure_keeps_structural_index(self):
