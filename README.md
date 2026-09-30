@@ -143,3 +143,11 @@ python -m unittest discover -s tests -p 'test_topic*.py' -v
 ```
 
 Os testes simulam REST, cotas compartilhadas, RPM/TPM/RPD, recuperação de 429/503, autenticação, truncamento, integração upload → mapa e mensagens do frontend. Velocidade e qualidade com a API real precisam ser medidas com a chave local e o mesmo edital; não há garantia de aceleração.
+
+### Leitura dos trechos de origem
+
+A interface agrupa linhas verificadas consecutivas da mesma fonte e página em um bloco, com indicação de página uma única vez. Quebras de frase do PDF são refluídas; parágrafos, alíneas e cláusulas numeradas mantêm separação. Linhas não selecionadas não são inseridas, e lacunas, páginas e fontes diferentes permanecem em blocos distintos. O texto é escapado antes da renderização, sem executar HTML recebido do documento. A área “Seções vinculadas no PDF” foi removida; páginas e trechos continuam acessíveis em “Conferir trechos de origem”.
+
+Novas extrações guardam os separadores originais entre fragmentos de linha. Mapas antigos com índices de linha também se agrupam, mas sem essa informação não é possível reconstruir todas as quebras de parágrafo originais. O cache de identificação foi versionado para não reutilizar resultados sem os novos separadores em uma retomada. A apresentação não faz chamadas adicionais à IA nem gera explicações.
+
+Teste: `python -m unittest discover -s tests -p 'test_source_display.py' -v`.
