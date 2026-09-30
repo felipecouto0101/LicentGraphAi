@@ -44,6 +44,78 @@ def _heading(content: str):
     return None
 
 
+def split_topic_sections(pages: list[str]) -> list[dict]:
+    """Lê cabeçalhos em todas as linhas ANTES de fragmentar ou reordenar texto."""
+    blocks = []
+    theme, subtopic = "Introdução e dados iniciais", "Dados de abertura do edital"
+    # Não tratar frases em caixa alta da capa nem regras numeradas como títulos.
+    numbered = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,3})[.)]?\s+(.+)$")
+    annex = re.compile(r"^ANEXO\s+([IVXLCDM]+|\d+)(?:\s*[-–:]\s*(.*))?$", re.I)
+    clause = re.compile(r"^CL[ÁA]USULA\s+(.+?)\s*[-–:]\s*(.+)$", re.I)
+    body_verbs = re.compile(r"\b(?:devera|deverao|deve|podera|poderao|sera|serao|fica|sao)\b")
+    in_annex = False
+    for page_number, page in enumerate(pages, 1):
+        lines = page.splitlines()
+        pending = []
+
+        def flush():
+            content = "\n".join(pending).strip()
+            if content:
+                blocks.append({"content": content, "page": page_number,
+                               "topic_title": theme, "subtopic_title": subtopic})
+            pending.clear()
+
+        is_contents = any(_key(line) in {"sumario", "indice", "indice geral"} for line in lines[:6])
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            clean = _clean(line)
+            match = numbered.match(clean)
+            ann = annex.match(clean)
+            cl = clause.match(clean)
+            kind, title = None, None
+            # Pontilhados são entradas do sumário, não seções do corpo.
+            if not is_contents and "..." not in clean:
+                if ann:
+                    kind, title = "theme", clean
+                    in_annex = True
+                elif cl:
+                    kind, title = ("sub" if in_annex else "theme"), cl.group(2)
+                elif (match and ("." in match.group(1)
+                                 or re.match(r"^\d+(?:\.\d+)*[.)]\s", clean)
+                                 or (match.group(1).isdigit() and not in_annex))
+                      and match.group(2).isupper() and not body_verbs.search(_key(match.group(2)))):
+                    kind = "theme" if "." not in match.group(1) and not in_annex else "sub"
+                    title = match.group(2)
+                elif _key(clean) == "preambulo":
+                    kind, title = "theme", clean
+            consumed = 1
+            if kind:
+                # Continuações em caixa alta pertencem ao mesmo título.
+                while index + consumed < len(lines):
+                    following = _clean(lines[index + consumed])
+                    if (not following or not following.isupper() or "..." in following
+                            or numbered.match(following) or annex.match(following)
+                            or clause.match(following) or following.endswith(":")
+                            or len(title + " " + following) > 180):
+                        break
+                    # Só anexos sem descrição aceitam o título na linha seguinte;
+                    # cabeçalhos completos não absorvem parágrafos em caixa alta.
+                    if not (consumed == 1 and ann and not ann.group(2)) and not title.endswith((" DE", " E", " DA", " DO", " DAS", " DOS")):
+                        break
+                    title += " " + following
+                    consumed += 1
+                flush()
+                if kind == "theme":
+                    theme, subtopic = _display(_clean(title)), "Visão geral da seção"
+                else:
+                    subtopic = _display(_clean(title))
+            pending.extend(lines[index:index + consumed])
+            index += consumed
+        flush()
+    return blocks
+
+
 def build_topic_map(chunks: list[dict]) -> list[dict]:
     """Agrupa todos os chunks; repetição de título reúne as fontes sem perda."""
     themes: OrderedDict[str, dict] = OrderedDict()
@@ -56,6 +128,16 @@ def build_topic_map(chunks: list[dict]) -> list[dict]:
         heading = _heading(content)
         page = chunk.get("metadata", {}).get("page")
         chunk_id = chunk.get("metadata", {}).get("chunk_id", index)
+        structural = chunk.get("metadata", {})
+        if structural.get("topic_title"):
+            title = structural["topic_title"]
+            key = _key(title)
+            if key not in themes:
+                themes[key] = {"id": f"tema-{len(themes) + 1}", "title": title,
+                               "display_title": _display(title), "subtopics": []}
+            current_theme = themes[key]
+            current_subtopic = structural.get("subtopic_title") or "Visão geral da seção"
+            heading = None
         if heading:
             numbering, title, level = heading
             if level == 1:
@@ -117,10 +199,14 @@ def merge_similar_themes(topic_map: list[dict], encoder, threshold: float = 0.84
     grouped: list[dict] = []
     representatives = []
     for index, theme in enumerate(topic_map):
-        generic = theme["title"].startswith("Seção ") or theme["id"] == "tema-inicial"
+        generic = (theme["title"].startswith("Seção ")
+                   or theme["title"] == "Introdução e dados iniciais")
         best = None
         if not generic and norms[index]:
             for position, other in enumerate(representatives):
+                if (topic_map[other]["title"].startswith("Seção ")
+                        or topic_map[other]["title"] == "Introdução e dados iniciais"):
+                    continue
                 if norms[other] and float(vectors[index] @ vectors[other] /
                                           (norms[index] * norms[other])) >= threshold:
                     best = position
