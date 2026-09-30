@@ -9,6 +9,108 @@ from typing import Dict, List
 
 
 class TestTransientGroqFailures:
+    def test_truncated_single_chunk_splits_text_and_resumes_parts(self, monkeypatch, tmp_path):
+        import json
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node._checkpoint_file = tmp_path / "text-split.json"
+        text = ("Primeira cláusula completa sobre documentos obrigatórios. " * 5
+                + "Segunda cláusula completa sobre condições de participação. " * 5)
+        chunk = {"content": text, "metadata": {"page": 15, "chunk_id": 42}}
+        cut = node._extraction_text_cut(text)
+        calls, completed = [], []
+        failed = [False]
+        def extract(batch, system, context):
+            fragment = batch[0]
+            content = fragment["content"]
+            calls.append(content)
+            assert fragment["metadata"]["page"] == 15
+            assert fragment["metadata"]["chunk_id"] == 42
+            if content == text:
+                raise module.GroqOutputTruncated("length")
+            if content == text[cut:] and not failed[0]:
+                failed[0] = True
+                assert context[-1]["content"] == text[:cut]
+                raise RuntimeError("503")
+            completed.append(content)
+            quote = content.strip()[:45]
+            sources = node._verify_extracted_rules([{
+                "tipo": "participacao", "titulo": "Regra do fragmento " + quote,
+                "trecho_id": 1, "citacao": quote, "condicao": "",
+            }], batch, context)
+            return {"documentos": [quote], "objeto": "", "nivel_risco": "BAIXO"}, sources
+        monkeypatch.setattr(node, "_extract_verified_batch", extract)
+        state = {}
+        with pytest.raises(RuntimeError, match="503"):
+            node._extract_budgeted_batch([chunk], "system", [], state, 18)
+        restored = json.loads(node._checkpoint_file.read_text(encoding="utf-8"))
+        result, sources = node._extract_budgeted_batch([chunk], "system", [], restored, 18)
+        assert calls == [text, text[:cut], text[cut:], text[cut:]]
+        assert "".join(completed) == text  # Nenhum caractere foi descartado.
+        assert len(result["documentos"]) == 2
+        assert {source["pagina"] for source in sources["participacao"]} == {15}
+        assert {source["chunk_id"] for source in sources["participacao"]} == {42}
+
+    def test_recursive_text_subdivision_covers_every_character(self, monkeypatch, tmp_path):
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node._checkpoint_file = tmp_path / "recursive.json"
+        text = "".join(f"Cláusula {i}: obrigação contratual descrita no edital. " for i in range(20))
+        completed = []
+        def extract(batch, *args):
+            content = batch[0]["content"]
+            if len(content) > 150:
+                raise module.GroqOutputTruncated("length")
+            completed.append(content)
+            return {"entregas": [content], "nivel_risco": "BAIXO"}, {"participacao": [], "selecao": []}
+        monkeypatch.setattr(node, "_extract_verified_batch", extract)
+        state = {}
+        result, _ = node._extract_budgeted_batch([{
+            "content": text, "metadata": {"page": 7, "chunk_id": 6}
+        }], "system", [], state, 18)
+        assert "".join(completed) == text
+        assert "".join(result["entregas"]) == text
+        assert len(completed) > 2
+        assert any("split_at" in part for part in state["partial_batches"]["18"].values())
+
+    def test_text_subdivision_stops_for_tiny_truncated_fragment(self, monkeypatch, tmp_path):
+        from app.rag import node_3_analyzer as module
+
+        node = object.__new__(module.Node3RequirementAnalyzer)
+        node._checkpoint_file = tmp_path / "tiny.json"
+        calls = []
+        def extract(batch, *args):
+            calls.append(batch[0]["content"])
+            raise module.GroqOutputTruncated("length")
+        monkeypatch.setattr(node, "_extract_verified_batch", extract)
+        chunk = {"content": "Uma cláusula curta que sempre retorna resposta truncada.",
+                 "metadata": {"page": 3, "chunk_id": 2}}
+        with pytest.raises(module.GroqRequestTooLarge, match="subtrecho"):
+            node._extract_budgeted_batch([chunk], "system", [], {}, 18)
+        assert calls == [chunk["content"]]  # Não repete eternamente.
+
+    def test_quote_across_text_boundary_keeps_original_page_and_chunk(self):
+        from app.rag import node_3_analyzer as module
+
+        prefix = "Se a empresa tiver menos de dois anos, "
+        suffix = "apresente os balanços disponíveis."
+        metadata = {"page": 4, "chunk_id": 9}
+        prior = {"content": prefix, "metadata": {**metadata,
+                  "source_char_start": 0, "source_char_end": len(prefix)}}
+        chunk = {"content": suffix, "metadata": {**metadata,
+                  "source_char_start": len(prefix), "source_char_end": len(prefix + suffix)}}
+        rows = [{"tipo": "participacao", "titulo": "Balanços de empresas recentes",
+                 "citacao": prefix + suffix, "condicao": prefix.strip(), "trecho_id": 1}]
+        source = module.Node3RequirementAnalyzer._verify_extracted_rules(rows, [chunk], [prior])
+        assert source["participacao"][0]["citacao"] == prefix + suffix
+        assert source["participacao"][0]["pagina"] == 4
+        assert source["participacao"][0]["chunk_id"] == 9
+        prior["metadata"]["page"] = 5
+        with pytest.raises(ValueError, match="Citação"):
+            module.Node3RequirementAnalyzer._verify_extracted_rules(rows, [chunk], [prior])
+
     def test_otpm_reduces_output_budget_without_splitting_input(self, monkeypatch):
         from types import SimpleNamespace
         from app.rag import node_3_analyzer as module
