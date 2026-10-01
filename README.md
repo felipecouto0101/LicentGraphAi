@@ -11,7 +11,7 @@ A interface atual permite enviar o documento, buscar assuntos e consultar suas f
 | Interface | Streamlit | Upload, busca, navegação por temas, fontes e acompanhamento do progresso. |
 | API | FastAPI, Uvicorn e Pydantic | Endpoints, jobs em background e retomada da organização. |
 | Processamento do PDF | pdfplumber e LangChain | Extração de texto e tabelas, identificação de seções e divisão em chunks com referências de página. |
-| Organização com IA | Gemini via REST ou Groq via LangChain | Identificação de subtemas e agrupamento em temas, com saída estruturada. |
+| Organização com IA | LangChain: ChatGoogleGenerativeAI (Gemini) e ChatGroq (Groq) | Identificação de subtemas e agrupamento em temas, com saída estruturada. |
 | Recuperação de fontes | Python | Validação das referências, recuperação do contexto original e apresentação de parágrafos, listas e tabelas. |
 | Pipeline completo | LangGraph, Sentence Transformers e ChromaDB | Orquestração da análise completa, embeddings e recuperação de contexto com RAG. |
 
@@ -81,6 +81,8 @@ python -m streamlit run app/streamlit_app.py
 Configure `TOPIC_LLM_PROVIDER=groq` e `GROQ_API_KEY`. Chaves extras usam `GROQ_API_KEY_2`, `GROQ_API_KEY_3` etc. Para contas de organizações diferentes, `GROQ_INDEPENDENT_ACCOUNTS=true` permite procurar outra conta disponível antes de esperar. O padrão é `false`.
 
 O pipeline completo requer a configuração Groq mesmo quando o mapa usa Gemini. Reinicie o backend após alterar o `.env`.
+
+Ambos os provedores usam LangChain. O cliente Gemini mantém controle local de cotas, tentativas e progresso; as tentativas internas do SDK ficam desativadas. Após atualizar esta versão, execute `python -m pip install -r requirements.txt` para instalar `langchain-google-genai`.
 
 ## API e armazenamento
 
