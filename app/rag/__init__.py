@@ -1,18 +1,29 @@
-from .langgraph_workflow import create_licit_graph_workflow, run_licit_graph_pipeline
-from .node_1_reader_chunker import Node1ReaderChunker
-from .node_2_embeddings import Node2EmbeddingGenerator
-from .node_3_analyzer import Node3RequirementAnalyzer
-from .node_4_document_generator import Node4DocumentGenerator
-from .pdf_reader import PDFReader
-from .text_chunker import TextChunker
+"""RAG components, loaded only when explicitly requested."""
 
-__all__ = [
-    "create_licit_graph_workflow",
-    "run_licit_graph_pipeline",
-    "Node1ReaderChunker",
-    "Node2EmbeddingGenerator",
-    "Node3RequirementAnalyzer",
-    "Node4DocumentGenerator",
-    "PDFReader",
-    "TextChunker",
-]
+from importlib import import_module
+
+_EXPORTS = {
+    "create_licit_graph_workflow": "langgraph_workflow",
+    "run_licit_graph_pipeline": "langgraph_workflow",
+    "Node1ReaderChunker": "node_1_reader_chunker",
+    "Node2EmbeddingGenerator": "node_2_embeddings",
+    "Node3RequirementAnalyzer": "node_3_analyzer",
+    "Node4DocumentGenerator": "node_4_document_generator",
+    "PDFReader": "pdf_reader",
+    "TextChunker": "text_chunker",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f".{module_name}", __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
