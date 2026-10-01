@@ -33,7 +33,7 @@ jobs:
       - run: python -m pip install ruff==0.16.9
       - run: mkdir -p reports
       - name: Check Python diagnostics
-        run: ruff check app tests start_app.py --output-format json --output-file reports/ruff.json
+        run: ruff check app tests scripts start_app.py --output-format json --output-file reports/ruff.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -85,12 +85,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install bandit==1.9.4
-      - run: python -m compileall -q app start_app.py
+      - run: python -m compileall -q app scripts start_app.py
       - run: mkdir -p reports
       - name: Collect all findings
-        run: bandit -r app start_app.py -f json -o reports/bandit.json --exit-zero
+        run: bandit -r app scripts start_app.py -f json -o reports/bandit.json --exit-zero
       - name: Reject medium and high findings
-        run: bandit -r app start_app.py --severity-level medium --confidence-level medium
+        run: bandit -r app scripts start_app.py --severity-level medium --confidence-level medium
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -118,12 +118,12 @@ jobs:
           semgrep scan --config p/python --config p/security-audit
           --metrics off --disable-version-check --strict
           --json-output reports/semgrep.json --sarif-output reports/semgrep.sarif
-          app start_app.py
+          app scripts start_app.py
       - name: Reject error-level findings
         run: >-
           semgrep scan --config p/python --config p/security-audit
           --metrics off --disable-version-check --strict --severity ERROR --error
-          app start_app.py
+          app scripts start_app.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -151,8 +151,13 @@ jobs:
       - run: python -m pip check
       - run: python -m pip install pip-audit==2.10.1
       - run: mkdir -p reports
-      - name: Audit resolved application environment
-        run: python -m pip_audit --local --progress-spinner off --format json --output reports/pip-audit.json
+      - name: Verify enforced Chroma security scope with the real backend
+        run: python -m pytest tests/test_chroma_security.py -q
+      - name: Audit environment and assess deployment applicability
+        run: |
+          audit_status=0
+          python -m pip_audit --local --progress-spinner off --format json --output reports/pip-audit.json || audit_status=$?
+          python scripts/check_dependency_audit.py --report reports/pip-audit.json --review security/dependency-reviews.json --output reports/dependency-assessment.json --audit-exit-code "$audit_status"
       - name: Summarize dependency findings
         if: always()
         run: |
@@ -170,7 +175,9 @@ jobs:
         if: always()
         with:
           name: dependency-report
-          path: reports/pip-audit.json
+          path: |
+            reports/pip-audit.json
+            reports/dependency-assessment.json
           retention-days: 7
 
   secrets:

@@ -13,7 +13,7 @@ execução começa.
 | Tests (Python 3.12) | Testes sem a marca `integration`, incluindo API, fontes, clientes simulados e interface | Qualquer teste selecionado falha ou conflito nas dependências de teste. |
 | Bandit | Código da aplicação e inicializador | Achados de severidade média/alta e confiança média/alta. |
 | Semgrep | Regras Community Edition `p/python` e `p/security-audit` | Achados classificados como `ERROR` ou erros de análise no modo estrito. |
-| Dependency audit | Ambiente instalado a partir de `requirements.txt`, incluindo dependências transitivas | Vulnerabilidades conhecidas encontradas pelo pip-audit, falha na consulta ou conflito de dependências. |
+| Dependency audit | Ambiente instalado a partir de `requirements.txt`, incluindo dependências transitivas | Vulnerabilidades sem revisão aplicável, falha na consulta, conflitos ou revisão vencida; relatório bruto completo preservado. |
 | Gitleaks | Histórico Git completo disponível no checkout | Segredos identificados ou erro na execução do scanner. |
 | CI gate | Resultado de todos os jobs | Qualquer check falha, é cancelado ou fica incompleto. |
 
@@ -53,9 +53,9 @@ vulnerabilidades. Os checks possuem limites de duração e cache de pacotes.
 ```bash
 python -m pip install -r requirements-ci.txt
 python -m pip install ruff==0.16.9 bandit==1.9.4
-ruff check app tests start_app.py
+ruff check app tests scripts start_app.py
 python -m pytest tests -m "not integration"
-bandit -r app start_app.py --severity-level medium --confidence-level medium
+bandit -r app scripts start_app.py --severity-level medium --confidence-level medium
 ```
 
 Instale Semgrep em um ambiente separado das dependências da aplicação:
@@ -76,15 +76,18 @@ conforme o plano do GitHub. O arquivo de workflow, sozinho, não impede o merge.
 Os checks analisam código e dependências; não comprovam a ausência de todas as
 vulnerabilidades nem avaliam a qualidade semântica das respostas da IA.
 
-## Achados da auditoria completa
+## Tratamento dos alertas ChromaDB
 
-A primeira auditoria identificou avisos de segurança no ChromaDB para os quais a
-base consultada não informou versões corrigidas: `PYSEC-2026-311`,
-`PYSEC-2026-3813`, `PYSEC-2026-3814` e `PYSEC-2026-3815`. Esses avisos permanecem
-visíveis e bloqueiam o check de dependências enquanto forem reportados. Eles
-descrevem problemas em APIs de servidor; o projeto usa `PersistentClient` local,
-mas a auditoria de componentes não determina a explorabilidade de cada caminho.
+O ChromaDB permanece na versão 1.5.9. O cliente usa apenas o backend Rust local
+com vetores explícitos; funções de embeddings personalizadas/implícitas e backend
+remoto são bloqueados. A auditoria publica tanto os achados originais quanto a
+avaliação de aplicabilidade, sem `--ignore-vuln`.
 
-O PyPDF2, que não é usado pelo leitor da aplicação, foi removido do manifesto.
-O job atualiza pip e setuptools antes da resolução para evitar auditar versões
-antigas das ferramentas pré-instaladas no runner.
+Os quatro avisos de servidor Python são revisados especificamente para esse uso,
+com validade até 31/10/2026. A avaliação exige testes do Chroma real aprovados e
+bloqueia novos avisos, outras versões, correções disponíveis e revisão vencida.
+A biblioteca upstream não foi corrigida pelo projeto. Consulte os controles,
+limitações e referências em [Segurança do ChromaDB](chroma-security.md).
+
+O PyPDF2 não utilizado foi removido. O job atualiza pip e setuptools antes da
+resolução para evitar ferramentas antigas pré-instaladas no runner.

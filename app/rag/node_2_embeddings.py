@@ -1,8 +1,8 @@
 import logging
-from pathlib import Path
 from typing import ClassVar
 
 import chromadb
+from .chroma_security import create_local_chroma_client, create_local_collection, get_local_collection
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -146,22 +146,18 @@ class Node2EmbeddingGenerator:
         """
         logger.info(f"Armazenando {len(embedded_chunks)} chunks no ChromaDB")
 
-        # Inicializa cliente ChromaDB
-        if persist_directory:
-            Path(persist_directory).mkdir(parents=True, exist_ok=True)
-            self.chroma_client = chromadb.PersistentClient(path=persist_directory)
-        else:
-            self.chroma_client = chromadb.Client()
+        # Apenas backend local; embeddings são gerados fora do Chroma.
+        self.chroma_client = create_local_chroma_client(persist_directory)
 
         # Cria ou obtém coleção
         try:
-            collection = self.chroma_client.get_collection(name=collection_name)
+            collection = get_local_collection(self.chroma_client, collection_name)
             logger.info(
                 f"Coleção '{collection_name}' já existe com {collection.count()} documentos"
             )
-        except Exception:
-            collection = self.chroma_client.create_collection(
-                name=collection_name,
+        except chromadb.errors.NotFoundError:
+            collection = create_local_collection(
+                self.chroma_client, name=collection_name,
                 metadata={
                     "hnsw:space": "cosine",
                     "model": self.model_name,
@@ -353,13 +349,10 @@ class Node2EmbeddingGenerator:
 
         # Inicializa cliente se necessário
         if not self.chroma_client:
-            if persist_directory:
-                self.chroma_client = chromadb.PersistentClient(path=persist_directory)
-            else:
-                self.chroma_client = chromadb.Client()
+            self.chroma_client = create_local_chroma_client(persist_directory)
 
         # Obtém coleção
-        collection = self.chroma_client.get_collection(name=collection_name)
+        collection = get_local_collection(self.chroma_client, collection_name)
 
         # Gera embedding da query
         query_embedding = self.embeddings.encode([query], convert_to_numpy=True)
