@@ -140,6 +140,6 @@ consolida o resultado das verificações.
 
 Consulte [a configuração e os critérios de aprovação](docs/ci.md).
 
-O ChromaDB usa o backend Rust local com embeddings explícitos. Os alertas de
-servidor Python têm revisão de aplicabilidade com prazo de validade, publicada
-junto ao relatório bruto do scanner. Veja [os controles e limites dessa revisão](docs/chroma-security.md).
+O ChromaDB usa o backend Rust local com embeddings explícitos. Alertas sem correção
+informada são avisos não bloqueantes; alertas com correção disponível reprovam
+a auditoria. O relatório bruto é preservado. Veja [os controles e limites dessa revisão](docs/chroma-security.md).

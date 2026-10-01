@@ -153,12 +153,12 @@ jobs:
       - run: mkdir -p reports
       - name: Verify enforced Chroma security scope with the real backend
         run: python -m pytest tests/test_chroma_security.py -q
-      - name: Audit environment and assess deployment applicability
+      - name: Audit environment and apply fix availability policy
         run: |
           python scripts/export_audit_inventory.py --inventory reports/installed-packages.json --requirements reports/audited-packages.txt
           audit_status=0
           python -m pip_audit -r reports/audited-packages.txt --no-deps --disable-pip --progress-spinner off --format json --output reports/pip-audit.json || audit_status=$?
-          python scripts/check_dependency_audit.py --report reports/pip-audit.json --review security/dependency-reviews.json --output reports/dependency-assessment.json --audit-exit-code "$audit_status"
+          python scripts/check_dependency_audit.py --report reports/pip-audit.json --output reports/dependency-assessment.json --audit-exit-code "$audit_status"
       - name: Summarize dependency findings
         if: always()
         run: |

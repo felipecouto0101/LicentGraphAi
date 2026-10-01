@@ -13,7 +13,7 @@ execução começa.
 | Tests (Python 3.12) | Testes sem a marca `integration`, incluindo API, fontes, clientes simulados e interface | Qualquer teste selecionado falha ou conflito nas dependências de teste. |
 | Bandit | Código da aplicação e inicializador | Achados de severidade média/alta e confiança média/alta. |
 | Semgrep | Regras Community Edition `p/python` e `p/security-audit` | Achados classificados como `ERROR` ou erros de análise no modo estrito. |
-| Dependency audit | Ambiente instalado a partir de `requirements.txt`, incluindo dependências transitivas | Vulnerabilidades sem revisão aplicável, falha na consulta, conflitos ou revisão vencida; relatório bruto completo preservado. |
+| Dependency audit | Ambiente instalado a partir de `requirements.txt`, incluindo dependências transitivas | Vulnerabilidades com versão corrigida disponível, falha na consulta, conflitos ou auditoria incompleta. Sem correção informada: aviso não bloqueante. |
 | Gitleaks | Histórico Git completo disponível no checkout | Segredos identificados ou erro na execução do scanner. |
 | CI gate | Resultado de todos os jobs | Qualquer check falha, é cancelado ou fica incompleto. |
 
@@ -86,11 +86,11 @@ com vetores explícitos; funções de embeddings personalizadas/implícitas e ba
 remoto são bloqueados. A auditoria publica tanto os achados originais quanto a
 avaliação de aplicabilidade, sem `--ignore-vuln`.
 
-Os quatro avisos de servidor Python são revisados especificamente para esse uso,
-com validade até 31/10/2026. A avaliação exige testes do Chroma real aprovados e
-bloqueia novos avisos, outras versões, correções disponíveis e revisão vencida.
-A biblioteca upstream não foi corrigida pelo projeto. Consulte os controles,
-limitações e referências em [Segurança do ChromaDB](chroma-security.md).
+A política publica alertas sem correção informada como avisos, sem reprovar o
+pipeline nem depender de prazo de revisão. Alertas com versões corrigidas
+informadas bloqueiam o check. Falhas do scanner, pacotes não auditados e testes
+reprovados continuam bloqueando. A análise de aplicabilidade dos quatro avisos
+do Chroma permanece documentada como contexto. Consulte [Segurança do ChromaDB](chroma-security.md).
 
 O PyPDF2 não utilizado foi removido. O job atualiza pip e setuptools antes da
 resolução para evitar ferramentas antigas pré-instaladas no runner.

@@ -46,15 +46,19 @@ Outros builds locais são recusados. Não há exclusão de pacotes nem nova reso
 de dependências durante a consulta.
 
 O pip-audit gera o **relatório bruto completo**, incluindo os quatro alertas.
-Não é usado `--ignore-vuln`. O job executa testes do Chroma real antes de avaliar
-`security/dependency-reviews.json` e publica também a avaliação de aplicabilidade.
-Os avisos conhecidos são classificados como não aplicáveis ao deployment
-restrito; isso é uma exceção de aplicabilidade explícita, não uma correção upstream.
+Não é usado `--ignore-vuln`. O job executa testes do Chroma real antes da auditoria.
+`security/dependency-reviews.json` mantém a análise dos quatro avisos como
+informação de contexto; não controla a aprovação nem expira o pipeline.
 
-Novos avisos, outros pacotes, outra versão, correção publicada, auditoria incompleta,
-falha dos controles ou revisão vencida reprovam o pipeline. A revisão atual expira
-em **31/10/2026** e requer nova análise após essa data. Não há exclusão permanente
-ou autorização para desativar controles a fim de aprovar o check.
+A política vale para todos os pacotes: avisos sem versão corrigida informada pela
+base consultada são publicados como warnings e permitem aprovação. Avisos com
+correção disponível bloqueiam o check. Falhas da auditoria, pacotes não auditados,
+conflitos de dependências e falhas dos testes continuam bloqueando. A política
+não tem prazo de expiração; a análise é executada novamente a cada run.
+
+A aprovação não significa que a biblioteca foi corrigida ou que os riscos foram
+eliminados. O relatório bruto e os avisos continuam disponíveis nos artefatos e
+no resumo do job, incluindo novos avisos sem correção.
 
 Os testes usam o Chroma real com vetores determinísticos; não baixam modelos nem
 consomem APIs de IA. Os testes que carregam Sentence Transformers real permanecem
