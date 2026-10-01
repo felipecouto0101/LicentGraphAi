@@ -3,13 +3,12 @@
 O backend gera métricas, eventos estruturados e traces com OpenTelemetry. Alloy
 recebe OTLP/HTTP e encaminha métricas ao Prometheus, logs ao Loki e traces ao
 Tempo. Grafana contém as três fontes de dados e o dashboard **LicitGraphAi — Operação**.
-A infraestrutura é local, com volumes persistentes, imagens com versões fixas e
+A infraestrutura é local, com armazenamento persistente, versões fixas e
 portas publicadas somente em `127.0.0.1`.
 
-## Executar no Windows ou Linux
+## Executar sem Docker (Windows ou Linux x64)
 
-Requer Docker com Compose v2 (no Windows, Docker Desktop com containers Linux).
-Na raiz do projeto, atualize as dependências:
+Na raiz do projeto:
 
 ```bash
 pip install -r requirements.txt
@@ -24,10 +23,22 @@ OTEL_TRACES_SAMPLER_ARG=1.0
 APP_ENV=local
 ```
 
-Inicie os serviços e a aplicação:
+No primeiro terminal:
 
 ```bash
-docker compose -f compose.observability.yaml up -d
+python start_observability.py
+```
+
+O iniciador baixa binários oficiais de versões fixas, verifica SHA256, prepara as
+configurações locais e inicia os cinco serviços. Não requer Docker, WSL nem
+instalação como serviço/administrador. A primeira execução precisa de internet e
+baixa arquivos grandes; nas próximas execuções reutiliza a instalação verificada.
+Os arquivos ficam em `data/observability/`, ignorados pelo Git. Os hashes e URLs
+estão em `observability/native-binaries.json`.
+
+Depois da mensagem **Observabilidade pronta**, execute em outro terminal:
+
+```bash
 python start_app.py
 ```
 
@@ -36,17 +47,39 @@ Em **Dashboards → LicitGraphAi**, abra **LicitGraphAi — Operação**. Após 
 PDF, os primeiros dados aparecem em cerca de 10–30 segundos. As consultas de
 variação precisam de pelo menos duas amostras; painéis sem eventos ficam vazios.
 
-Para conferir a infraestrutura sem chamar uma IA (Git Bash/Linux):
+`Ctrl+C` no primeiro terminal encerra os serviços iniciados por ele e mantém os
+dados. Se um serviço falhar, o iniciador encerra os demais e informa o arquivo de
+log correspondente em `data/observability/logs/`. Portas ocupadas são detectadas
+antes do início; pare uma stack anterior ou outro serviço usando as mesmas portas.
+A aplicação e a observabilidade têm terminais independentes.
+
+Para apenas baixar/verificar os binários:
 
 ```bash
-set -a
-source .env
-set +a
-python -m scripts.smoke_observability
+python start_observability.py --install-only
 ```
 
-O teste verifica o dashboard e entrega real de uma métrica, um log e um trace.
-No PowerShell, defina `$env:GRAFANA_ADMIN_PASSWORD` com a mesma senha antes de executar.
+Para iniciar a stack, verificar dashboard/consultas e entrega de uma métrica, um
+log e um trace, encerrando ao terminar, sem chamar uma IA:
+
+```bash
+python start_observability.py --smoke
+```
+
+Esse comando carrega a senha do `.env`; funciona no Git Bash e PowerShell.
+Windows e Linux são testados pelo CI com os binários reais.
+
+## Execução alternativa com Docker
+
+O Compose permanece disponível para quem usa Docker com containers Linux:
+
+```bash
+docker compose -f compose.observability.yaml up -d
+python start_app.py
+```
+
+Use a mesma configuração do `.env`. Não execute a stack nativa e a stack Docker
+ao mesmo tempo: elas usam as mesmas portas públicas.
 
 ## O que está instrumentado
 
@@ -88,9 +121,9 @@ existentes continuam no terminal. Prompts, respostas, conteúdo do PDF, nomes de
 arquivos, cabeçalhos, credenciais e mensagens completas de exceção não são
 exportados. Tipos de erro e estados operacionais são registrados.
 
-Prometheus e Loki mantêm dados por sete dias. Tempo e volumes usam armazenamento
-local; acompanhe o espaço em disco e remova volumes apenas quando quiser apagar
-a telemetria. Este Compose não configura armazenamento em nuvem, autenticação
+Prometheus e Loki mantêm dados por sete dias. Tempo e os demais serviços usam armazenamento
+local; acompanhe o espaço em disco e remova os dados apenas quando quiser apagar
+a telemetria. A configuração local não inclui armazenamento em nuvem, autenticação
 entre coletores nem alta disponibilidade. As regras `AnalysisFailures` e
 `CollectorUnavailable` ficam em Prometheus/Alerts; não há envio de notificações.
 
@@ -102,5 +135,5 @@ docker compose -f compose.observability.yaml down
 
 `down` mantém os dados. Alterar a senha no `.env` após a primeira inicialização
 não troca a senha armazenada pelo Grafana; use a interface de administração.
-O CI inicia os serviços, valida Alloy/Prometheus e verifica entrega dos três
-sinais. Falhas na infraestrutura reprovam o `CI gate`.
+O CI testa a stack nativa no Windows e Linux, além do Compose, validando entrega
+dos três sinais e consultas do dashboard. Falhas na infraestrutura reprovam o `CI gate`.

@@ -149,7 +149,8 @@ a auditoria. O relatório bruto é preservado. Veja [os controles e limites dess
 
 OpenTelemetry instrumenta HTTP, jobs, etapas do mapa e do LangGraph, chamadas à
 IA, consumo de tokens e espera por cota. Alloy encaminha métricas para Prometheus,
-logs para Loki e traces para Tempo. Grafana inclui um dashboard provisionado.
+logs para Loki e traces para Tempo. Grafana inclui um dashboard provisionado. A stack local inicia com
+`python start_observability.py`, sem Docker, no Windows ou Linux x64.
 A coleta é opcional e não exporta o conteúdo dos documentos ou credenciais.
 
 Veja [como executar e consultar a telemetria](docs/observability.md).

@@ -1,0 +1,56 @@
+{
+  "windows-amd64": {
+    "alloy": {
+      "url": "https://github.com/grafana/alloy/releases/download/v1.20.1/alloy-windows-amd64.exe.zip",
+      "sha256": "4921238b7d45bbd8ec4429ee06af734deb9f7a2a0fd98e5652b15a1bec2ad653",
+      "executable": "alloy-windows-amd64.exe"
+    },
+    "loki": {
+      "url": "https://github.com/grafana/loki/releases/download/v3.7.8/loki-windows-amd64.exe.zip",
+      "sha256": "622efc553df799ebb022c2e6c4b45792f726c54b008cb65126b99ae67be3a827",
+      "executable": "loki-windows-amd64.exe"
+    },
+    "tempo": {
+      "url": "https://github.com/grafana/tempo/releases/download/v3.1.0/tempo_3.1.0_windows_amd64.tar.gz",
+      "sha256": "ffa54eba3d8257683ef703293360925147522c525b7bc1506ef84560644dba18",
+      "executable": "tempo.exe"
+    },
+    "prometheus": {
+      "url": "https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.windows-amd64.zip",
+      "sha256": "5d333b385557d9adc2ff015d13da9809baccc52fb800a82d1e5c94b79258f87e",
+      "executable": "prometheus.exe"
+    },
+    "grafana": {
+      "url": "https://dl.grafana.com/grafana/release/13.2.3/grafana_13.2.3_36482603486_windows_amd64.tar.gz",
+      "sha256": "dafe883a7c15543c6d6710b868eb8b4053353441ce7ceacf150942b8de3960f0",
+      "executable": "grafana.exe"
+    }
+  },
+  "linux-amd64": {
+    "alloy": {
+      "url": "https://github.com/grafana/alloy/releases/download/v1.20.1/alloy-linux-amd64.zip",
+      "sha256": "451fe650e8277d22d69cb8db50bba809f581fe78decba7fce4027ef185457be9",
+      "executable": "alloy-linux-amd64"
+    },
+    "loki": {
+      "url": "https://github.com/grafana/loki/releases/download/v3.7.8/loki-linux-amd64.zip",
+      "sha256": "62aea42c9cba52cd1642b3666ab37019a0ce4c24ab50b07e85dccc8d812f7d61",
+      "executable": "loki-linux-amd64"
+    },
+    "tempo": {
+      "url": "https://github.com/grafana/tempo/releases/download/v3.1.0/tempo_3.1.0_linux_amd64.tar.gz",
+      "sha256": "9604ab46348270a42954801bba91cd65335e16568ef886bdf71b988fdcb7ac4e",
+      "executable": "tempo"
+    },
+    "prometheus": {
+      "url": "https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.linux-amd64.tar.gz",
+      "sha256": "2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0",
+      "executable": "prometheus"
+    },
+    "grafana": {
+      "url": "https://dl.grafana.com/grafana/release/13.2.3/grafana_13.2.3_36482603486_linux_amd64.tar.gz",
+      "sha256": "6107ad27016296aac38e0d7ffa8753ab540b5541ad27e94790f771289d733235",
+      "executable": "grafana"
+    }
+  }
+}
