@@ -1,9 +1,8 @@
-import hashlib
 import logging
 from pathlib import Path
 from typing import ClassVar
 
-from .vector_store import CollectionNotFoundError, LocalVectorClient
+import chromadb
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -13,11 +12,11 @@ logger = logging.getLogger(__name__)
 
 class Node2EmbeddingGenerator:
     """
-    Nó 2: Geração de Embeddings e Armazenamento no SQLite
+    Nó 2: Geração de Embeddings e Armazenamento no ChromaDB
 
     Responsável por:
     - Gerar embeddings dos chunks usando modelo HuggingFace
-    - Armazenar embeddings no SQLite
+    - Armazenar embeddings no ChromaDB
     - Preparar dados para busca semântica
     - Suportar busca vetorial eficiente
 
@@ -49,7 +48,7 @@ class Node2EmbeddingGenerator:
         self.device = device
         self.batch_size = batch_size
         self.show_progress = show_progress
-        self.vector_client: LocalVectorClient | None = None
+        self.chroma_client: chromadb.Client | None = None
 
         # Usa cache se disponível
         cache_key = f"{model_name}_{device}"
@@ -126,7 +125,7 @@ class Node2EmbeddingGenerator:
         )
         return result
 
-    def store_vectors(
+    def store_in_chromadb(
         self,
         embedded_chunks: list[dict],
         collection_name: str = "licitacoes",
@@ -134,7 +133,7 @@ class Node2EmbeddingGenerator:
         upsert: bool = False,
     ) -> str:
         """
-        Armazena embeddings no SQLite com opções avançadas.
+        Armazena embeddings no ChromaDB com opções avançadas.
 
         Args:
             embedded_chunks: Chunks com embeddings
@@ -145,39 +144,35 @@ class Node2EmbeddingGenerator:
         Returns:
             ID da coleção criada/atualizada
         """
-        logger.info(f"Armazenando {len(embedded_chunks)} chunks no SQLite")
+        logger.info(f"Armazenando {len(embedded_chunks)} chunks no ChromaDB")
 
-        # Inicializa cliente SQLite
+        # Inicializa cliente ChromaDB
         if persist_directory:
             Path(persist_directory).mkdir(parents=True, exist_ok=True)
-            self.vector_client = LocalVectorClient(path=persist_directory)
+            self.chroma_client = chromadb.PersistentClient(path=persist_directory)
         else:
-            self.vector_client = LocalVectorClient()
+            self.chroma_client = chromadb.Client()
 
         # Cria ou obtém coleção
         try:
-            collection = self.vector_client.get_collection(name=collection_name)
+            collection = self.chroma_client.get_collection(name=collection_name)
             logger.info(
                 f"Coleção '{collection_name}' já existe com {collection.count()} documentos"
             )
-        except CollectionNotFoundError:
-            collection = self.vector_client.create_collection(
+        except Exception:
+            collection = self.chroma_client.create_collection(
                 name=collection_name,
                 metadata={
-                    "metric": "cosine",
+                    "hnsw:space": "cosine",
                     "model": self.model_name,
                     "dimension": self.embedding_dimension,
                 },
             )
             logger.info(f"Coleção '{collection_name}' criada")
 
-        if (collection.metadata.get("model") != self.model_name
-                or collection.metadata.get("dimension") != self.embedding_dimension):
-            raise ValueError("A coleção usa outro modelo ou dimensão de embeddings")
-
         # Prepara dados para inserção
         ids = [
-            f"chunk_{chunk.get('metadata', {}).get('chunk_id', i)}_{hashlib.sha256(chunk['content'].encode()).hexdigest()}"
+            f"chunk_{i}_{hash(chunk['content']) % 10000}"
             for i, chunk in enumerate(embedded_chunks)
         ]
         documents = [chunk["content"] for chunk in embedded_chunks]
@@ -211,15 +206,6 @@ class Node2EmbeddingGenerator:
 
         return collection_name
 
-    @property
-    def chroma_client(self):
-        """Legacy accessor; the returned client uses SQLite, not ChromaDB."""
-        return self.vector_client
-
-    def store_in_chromadb(self, *args, **kwargs):
-        """Legacy method name retained for callers; stores vectors in SQLite."""
-        return self.store_vectors(*args, **kwargs)
-
     def process_chunks(
         self,
         chunks: list[dict],
@@ -232,7 +218,7 @@ class Node2EmbeddingGenerator:
 
         Args:
             chunks: Chunks do Nó 1
-            collection_name: Nome da coleção SQLite
+            collection_name: Nome da coleção ChromaDB
             persist_directory: Diretório para persistência
             batch_size: Tamanho do batch para processamento
 
@@ -248,8 +234,8 @@ class Node2EmbeddingGenerator:
         # Gera embeddings
         embedding_result = self.generate_embeddings(chunks, batch_size=batch_size)
 
-        # Armazena no SQLite
-        collection_id = self.store_vectors(
+        # Armazena no ChromaDB
+        collection_id = self.store_in_chromadb(
             embedding_result["chunks_with_embeddings"],
             collection_name=collection_name,
             persist_directory=persist_directory,
@@ -366,19 +352,14 @@ class Node2EmbeddingGenerator:
         logger.info(f"Buscando similaridade para: '{query}'")
 
         # Inicializa cliente se necessário
-        target_path = str(Path(persist_directory).resolve()) if persist_directory else None
-        if self.vector_client is None or self.vector_client.path != target_path:
+        if not self.chroma_client:
             if persist_directory:
-                self.vector_client = LocalVectorClient(path=persist_directory)
+                self.chroma_client = chromadb.PersistentClient(path=persist_directory)
             else:
-                self.vector_client = LocalVectorClient()
+                self.chroma_client = chromadb.Client()
 
         # Obtém coleção
-        collection = self.vector_client.get_collection(name=collection_name)
-
-        if (collection.metadata.get("model") != self.model_name
-                or collection.metadata.get("dimension") != self.embedding_dimension):
-            raise ValueError("A coleção usa outro modelo ou dimensão de embeddings")
+        collection = self.chroma_client.get_collection(name=collection_name)
 
         # Gera embedding da query
         query_embedding = self.embeddings.encode([query], convert_to_numpy=True)
@@ -404,7 +385,7 @@ def process_edital_embeddings(
 
     Args:
         chunks: Chunks do Nó 1
-        collection_name: Nome da coleção SQLite
+        collection_name: Nome da coleção ChromaDB
         persist_directory: Diretório para persistência
         model_name: Modelo de embedding
 

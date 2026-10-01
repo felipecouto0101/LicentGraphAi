@@ -13,9 +13,9 @@ Pela interface, o usuário envia um PDF, acompanha o processamento, busca assunt
 | Leitura de documentos | pdfplumber e LangChain | Extração de texto e tabelas, identificação de seções e divisão em chunks com referências de página. |
 | Organização com IA | LangChain, Gemini e Groq | Identificação de subtemas e agrupamento em temas com respostas estruturadas. |
 | Recuperação de fontes | Python | Validação das referências, recuperação de contexto e apresentação de parágrafos, listas e tabelas. |
-| Análise completa pela API | LangGraph, Sentence Transformers e SQLite e NumPy | Orquestração do pipeline, embeddings, recuperação de contexto com RAG e geração de checklist. |
+| Análise completa pela API | LangGraph, Sentence Transformers e ChromaDB | Orquestração do pipeline, embeddings, recuperação de contexto com RAG e geração de checklist. |
 
-Gemini utiliza `ChatGoogleGenerativeAI`; Groq utiliza `ChatGroq`. O mapa de assuntos processa diretamente o texto dos chunks. Embeddings e SQLite e NumPy fazem parte do pipeline de análise completa.
+Gemini utiliza `ChatGoogleGenerativeAI`; Groq utiliza `ChatGroq`. O mapa de assuntos processa diretamente o texto dos chunks. Embeddings e ChromaDB fazem parte do pipeline de análise completa.
 
 ## Fluxo da aplicação
 
@@ -29,7 +29,7 @@ O processamento valida as fontes, elimina sobreposições e recupera continuaç�
 
 Em caso de interrupção, o mapa apresenta os lotes validados e permite retomar a organização na mesma sessão. Quando não há subtemas validados, apresenta as seções originais do PDF e o motivo da interrupção.
 
-A análise completa, acessível por `/analyze/full`, utiliza quatro etapas no LangGraph: **leitura e chunking → embeddings e SQLite e NumPy → análise com Groq e RAG → checklist**.
+A análise completa, acessível por `/analyze/full`, utiliza quatro etapas no LangGraph: **leitura e chunking → embeddings e ChromaDB → análise com Groq e RAG → checklist**.
 
 ## Executar localmente
 
@@ -107,7 +107,7 @@ Os logs registram tempos de renderização, verificação da API e carregamento 
 
 - **Mapa:** jobs, páginas e cache dos lotes ficam em memória. Após reiniciar o backend, o PDF precisa ser reenviado.
 - **Uploads:** `data/raw/uploads/`.
-- **Análise completa:** índice em `data/vector_db/` e checkpoints em `data/checkpoints/`, configuráveis por `VECTOR_PERSIST_DIRECTORY` e `LICIT_CHECKPOINT_DIR`.
+- **Análise completa:** índice em `data/vector_db/` e checkpoints em `data/checkpoints/`, configuráveis por `CHROMA_PERSIST_DIRECTORY` e `LICIT_CHECKPOINT_DIR`.
 
 ## Escopo de processamento
 
@@ -139,13 +139,3 @@ Os relatórios ficam disponíveis nos artefatos da execução. O check `CI gate`
 consolida o resultado das verificações.
 
 Consulte [a configuração e os critérios de aprovação](docs/ci.md).
-
-O índice vetorial local usa `vectors.sqlite3`, separado dos arquivos antigos do
-ChromaDB. A busca calcula similaridade de cosseno exata com NumPy, por coleção;
-não utiliza um servidor de banco nem carrega modelos a partir dos metadados.
-É adequada ao volume de trechos de editais, com custo linear por consulta.
-
-Após atualizar de uma versão com ChromaDB, reinstale as dependências em um
-ambiente virtual novo e reenvie os PDFs para reconstruir seus índices. Os índices
-antigos e checkpoints não são apagados nem migrados automaticamente. A variável
-`CHROMA_PERSIST_DIRECTORY` ainda é aceita como alternativa de compatibilidade.

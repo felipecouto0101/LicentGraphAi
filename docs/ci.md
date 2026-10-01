@@ -34,7 +34,7 @@ recebem chaves Gemini/Groq nem baixam modelos de embeddings. O teste de startup
 bloqueia imports de dependências pesadas e verifica os endpoints reais da API.
 
 `tests/test_node_2.py` contém testes de integração que carregam modelos reais do
-Hugging Face e SQLite. Eles estão marcados como `integration` e não fazem parte
+Hugging Face e ChromaDB. Eles estão marcados como `integration` e não fazem parte
 do job offline. Para executá-los em um ambiente com as dependências completas e
 acesso aos modelos, use `python -m pytest tests -m integration`.
 
@@ -76,18 +76,15 @@ conforme o plano do GitHub. O arquivo de workflow, sozinho, não impede o merge.
 Os checks analisam código e dependências; não comprovam a ausência de todas as
 vulnerabilidades nem avaliam a qualidade semântica das respostas da IA.
 
-## Correção da dependência vetorial
+## Achados da auditoria completa
 
-A auditoria identificou quatro avisos no ChromaDB sem versões corrigidas
-informadas. A aplicação removeu essa dependência: vetores, documentos e metadados
-são persistidos em SQLite, com busca exata por cosseno usando NumPy. Não foram
-adicionadas exceções ao pip-audit; a auditoria continua cobrindo o ambiente completo.
+A primeira auditoria identificou avisos de segurança no ChromaDB para os quais a
+base consultada não informou versões corrigidas: `PYSEC-2026-311`,
+`PYSEC-2026-3813`, `PYSEC-2026-3814` e `PYSEC-2026-3815`. Esses avisos permanecem
+visíveis e bloqueiam o check de dependências enquanto forem reportados. Eles
+descrevem problemas em APIs de servidor; o projeto usa `PersistentClient` local,
+mas a auditoria de componentes não determina a explorabilidade de cada caminho.
 
-Os testes offline exercitam o armazenamento real, persistência, isolamento entre
-coleções, ranking, metadados, validação e escrita atômica. Os testes de integração
-separados ainda verificam o modelo de embeddings real. Para atualizar ambientes
-locais, use um ambiente virtual novo: instalar o novo manifesto em um ambiente
-antigo não desinstala automaticamente o ChromaDB.
-
-O PyPDF2 não utilizado foi removido. O job atualiza pip e setuptools antes da
-resolução para evitar versões antigas das ferramentas pré-instaladas no runner.
+O PyPDF2, que não é usado pelo leitor da aplicação, foi removido do manifesto.
+O job atualiza pip e setuptools antes da resolução para evitar auditar versões
+antigas das ferramentas pré-instaladas no runner.

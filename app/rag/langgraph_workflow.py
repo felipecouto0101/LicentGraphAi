@@ -73,7 +73,7 @@ def node_2_embeddings(state: LicitGraphState) -> LicitGraphState:
     """
     Nó 2: Geração de Embeddings (Wrapper para LangGraph)
     
-    Gera embeddings dos chunks e armazena no SQLite.
+    Gera embeddings dos chunks e armazena no ChromaDB.
     """
     logger.info("Nó 2: Iniciando geração de embeddings")
     
@@ -89,7 +89,7 @@ def node_2_embeddings(state: LicitGraphState) -> LicitGraphState:
         result = node2.process_chunks(
             state["chunks"],
             collection_name=collection_name,
-            persist_directory=os.getenv("VECTOR_PERSIST_DIRECTORY", os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db"))
+            persist_directory=os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db")
         )
         
         state["embeddings"] = {
@@ -120,7 +120,7 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
     try:
         validate_analysis_configuration()
         mock_mode = is_mock_mode()
-        persist_dir = os.getenv("VECTOR_PERSIST_DIRECTORY", os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db"))
+        persist_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/vector_db")
         collection = (state.get("embeddings") or {}).get("collection_id")
         if not collection:
             raise ValueError("Coleção vetorial do edital não disponível")

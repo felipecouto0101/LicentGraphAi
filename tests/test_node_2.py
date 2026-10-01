@@ -1,5 +1,5 @@
 """
-Testes para o Nó 2: Geração de Embeddings e Armazenamento no SQLite
+Testes para o Nó 2: Geração de Embeddings e Armazenamento no ChromaDB
 
 TDD Approach: Testes escritos antes da implementação
 """
@@ -8,7 +8,7 @@ import pytest
 import tempfile
 import shutil
 
-# These tests load real Hugging Face models and a persistent SQLite database.
+# These tests load real Hugging Face models and a persistent Chroma database.
 pytestmark = pytest.mark.integration
 
 
@@ -101,7 +101,7 @@ class TestNode2EmbeddingGenerator:
         assert result["chunks_with_embeddings"][0]["metadata"]["chunk_id"] == 0
     
     def test_store_in_chromadb_create_collection(self):
-        """Testa criação de coleção no SQLite."""
+        """Testa criação de coleção no ChromaDB."""
         from app.rag.node_2_embeddings import Node2EmbeddingGenerator
         
         node = Node2EmbeddingGenerator()
@@ -128,7 +128,7 @@ class TestNode2EmbeddingGenerator:
             shutil.rmtree(temp_dir, ignore_errors=True)
     
     def test_store_in_chromadb_search(self):
-        """Testa busca no SQLite após armazenamento."""
+        """Testa busca no ChromaDB após armazenamento."""
         from app.rag.node_2_embeddings import Node2EmbeddingGenerator
         
         node = Node2EmbeddingGenerator()
