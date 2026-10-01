@@ -1,35 +1,35 @@
 # LicitGraphAi
 
-Aplicação em Python que transforma editais em PDF em um **mapa navegável de temas e subtemas**, com páginas e trechos de origem para conferência.
+Aplicação em Python que organiza editais em PDF em um **mapa navegável de temas e subtemas**, com páginas e trechos do documento original.
 
-A interface atual permite enviar o documento, buscar assuntos e consultar suas fontes. A organização usa IA, sem categorias fixas; chat e explicações sob demanda ainda não estão disponíveis.
+Pela interface, o usuário envia um PDF, acompanha o processamento, busca assuntos e consulta as fontes. A IA identifica e agrupa os assuntos conforme o conteúdo de cada edital, sem categorias fixas.
 
 ## Arquitetura e tecnologias
 
-| Componente | Tecnologias | Responsabilidade |
+| Camada | Tecnologias | Responsabilidade |
 | --- | --- | --- |
-| Interface | Streamlit | Upload, busca, navegação por temas, fontes e acompanhamento do progresso. |
-| API | FastAPI, Uvicorn e Pydantic | Endpoints, jobs em background e retomada da organização. |
-| Processamento do PDF | pdfplumber e LangChain | Extração de texto e tabelas, identificação de seções e divisão em chunks com referências de página. |
-| Organização com IA | LangChain: ChatGoogleGenerativeAI (Gemini) e ChatGroq (Groq) | Identificação de subtemas e agrupamento em temas, com saída estruturada. |
-| Recuperação de fontes | Python | Validação das referências, recuperação do contexto original e apresentação de parágrafos, listas e tabelas. |
-| Pipeline completo | LangGraph, Sentence Transformers e ChromaDB | Orquestração da análise completa, embeddings e recuperação de contexto com RAG. |
+| Interface | Streamlit | Upload, busca, navegação por temas e subtemas, fontes e progresso. |
+| API | FastAPI, Uvicorn e Pydantic | Endpoints, validação das requisições e jobs em background. |
+| Leitura de documentos | pdfplumber e LangChain | Extração de texto e tabelas, identificação de seções e divisão em chunks com referências de página. |
+| Organização com IA | LangChain, Gemini e Groq | Identificação de subtemas e agrupamento em temas com respostas estruturadas. |
+| Recuperação de fontes | Python | Validação das referências, recuperação de contexto e apresentação de parágrafos, listas e tabelas. |
+| Análise completa pela API | LangGraph, Sentence Transformers e ChromaDB | Orquestração do pipeline, embeddings, recuperação de contexto com RAG e geração de checklist. |
 
-**O mapa de assuntos usa o texto dos chunks diretamente, sem embeddings ou ChromaDB.** O pipeline completo com RAG permanece disponível em `/analyze/full`, fora da interface atual.
+Gemini utiliza `ChatGoogleGenerativeAI`; Groq utiliza `ChatGroq`. O mapa de assuntos processa diretamente o texto dos chunks. Embeddings e ChromaDB fazem parte do pipeline de análise completa.
 
-### Fluxo principal: mapa de assuntos
+## Fluxo da aplicação
 
-1. **Upload:** a interface envia o PDF à API, que cria um job e inicia o processamento em background.
-2. **Extração:** o leitor preserva páginas, linhas e tabelas; identifica seções e divide o texto em chunks.
-3. **Identificação:** a IA recebe o texto em lotes e identifica subtemas, indicando IDs e linhas das fontes.
-4. **Validação e agrupamento:** o backend verifica as referências; a IA consolida os assuntos em temas. Lotes inválidos podem ser corrigidos ou subdivididos.
-5. **Apresentação:** o backend recupera o contexto no PDF original, deduplica sobreposições e vincula continuações identificáveis. A interface exibe o mapa, as fontes e o progresso.
+1. **Envio:** a interface envia o PDF à API, que cria um job de processamento.
+2. **Leitura:** o backend extrai texto e tabelas, identifica seções e gera chunks com referências ao documento.
+3. **Identificação:** a IA identifica subtemas em lotes e associa cada assunto às fontes.
+4. **Organização:** o backend valida as referências e a IA consolida os assuntos em temas.
+5. **Consulta:** a interface apresenta o mapa e permite buscar assuntos e abrir os trechos de origem.
 
-Se houver uma interrupção, os lotes validados ficam disponíveis como mapa parcial. Quando ainda não há subtemas validados, a interface apresenta o índice original e o motivo da interrupção.
+O processamento valida as fontes, elimina sobreposições e recupera continuações identificáveis entre páginas. Respostas inválidas ou truncadas passam por correção ou subdivisão dos lotes.
 
-### Fluxo completo: análise com RAG
+Em caso de interrupção, o mapa apresenta os lotes validados e permite retomar a organização na mesma sessão. Quando não há subtemas validados, apresenta as seções originais do PDF e o motivo da interrupção.
 
-Disponível pela API, utiliza LangGraph para executar quatro etapas: **leitura e chunking → embeddings e ChromaDB → análise com LLM e contexto recuperado → geração de checklist**. Usa Groq e mantém checkpoints em disco para retomada.
+A análise completa, acessível por `/analyze/full`, utiliza quatro etapas no LangGraph: **leitura e chunking → embeddings e ChromaDB → análise com Groq e RAG → checklist**.
 
 ## Executar localmente
 
@@ -42,9 +42,9 @@ python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-No Linux/macOS, a ativação é `source .venv/bin/activate`. No PowerShell, use `.\.venv\Scripts\Activate.ps1` e `Copy-Item .env.example .env`.
+No Linux/macOS, ative com `source .venv/bin/activate`. No PowerShell, use `.\.venv\Scripts\Activate.ps1` e `Copy-Item .env.example .env`.
 
-Configure o mapa com Gemini no `.env`:
+Configure o provedor no `.env`:
 
 ```dotenv
 TOPIC_LLM_PROVIDER=gemini
@@ -58,71 +58,72 @@ GEMINI_RPD_BUDGET=500
 GEMINI_OUTPUT_TOKEN_BUDGET=8192
 ```
 
-Esses valores são **orçamentos locais configuráveis**, não cotas universais ou saldo consultado no provedor. Ajuste-os aos limites da sua conta. Mantenha o `.env` fora do Git.
+Os orçamentos controlam o uso local de requisições e tokens. Configure-os conforme os limites da conta; o controle local não consulta saldo nem acompanha consumo externo. Mantenha o `.env` fora do Git.
 
-Inicie API e interface:
+Inicie os serviços:
 
 ```bash
 python start_app.py
 ```
 
-- Interface: [localhost:8501](http://localhost:8501)
-- Documentação da API: [127.0.0.1:8002/docs](http://127.0.0.1:8002/docs)
+- **Interface:** [localhost:8501](http://localhost:8501)
+- **Documentação da API:** [127.0.0.1:8002/docs](http://127.0.0.1:8002/docs)
 
-Para executar separadamente, use um terminal para cada comando:
+Para executar separadamente, use um terminal por serviço:
 
 ```bash
 python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002
 python -m streamlit run app/streamlit_app.py
 ```
 
-### Alternativa: Groq
+### Configuração Groq
 
-Configure `TOPIC_LLM_PROVIDER=groq` e `GROQ_API_KEY`. Chaves extras usam `GROQ_API_KEY_2`, `GROQ_API_KEY_3` etc. Para contas de organizações diferentes, `GROQ_INDEPENDENT_ACCOUNTS=true` permite procurar outra conta disponível antes de esperar. O padrão é `false`.
+Use `TOPIC_LLM_PROVIDER=groq` e `GROQ_API_KEY`. Chaves adicionais usam `GROQ_API_KEY_2`, `GROQ_API_KEY_3` etc.
 
-O pipeline completo requer a configuração Groq mesmo quando o mapa usa Gemini. Reinicie o backend após alterar o `.env`.
+Para contas de organizações diferentes, `GROQ_INDEPENDENT_ACCOUNTS=true` permite selecionar uma conta disponível antes de esperar. O padrão é `false`. O pipeline de análise completa requer Groq mesmo quando o mapa utiliza Gemini.
 
-Ambos os provedores usam LangChain. O cliente Gemini mantém controle local de cotas, tentativas e progresso; as tentativas internas do SDK ficam desativadas. Após atualizar esta versão, execute `python -m pip install -r requirements.txt` para instalar `langchain-google-genai`.
+Reinicie o backend após alterar o `.env`.
 
-### Carregamento da interface
+## Execução e acompanhamento
 
-O inicializador abre API e interface sem aguardar o backend ficar pronto. A tela inicial aparece sem aguardar a API: a conexão é verificada em background, com resultado reutilizado por 15 segundos. Conexão e progresso são atualizados por fragmentos do Streamlit; temas fechados e fontes ainda não abertas não renderizam seu conteúdo. Logs `ui_render` e `ui_api_health` registram tempos no servidor. Requer Streamlit 1.58 ou superior; atualize as dependências e reinicie a interface.
+A interface verifica a disponibilidade da API em background e reutiliza o resultado por 15 segundos. Fragmentos do Streamlit atualizam conexão e progresso; o conteúdo de temas e fontes é renderizado ao abrir seus respectivos painéis.
 
-### Inicialização do backend
+A API carrega leitores, clientes de IA e o pipeline completo conforme a execução dos jobs. O endpoint `/status` verifica a configuração sem carregar modelos ou processar PDFs.
 
-A API carrega apenas configuração e rotas ao iniciar. O pipeline LangGraph é importado no worker da análise completa; leitores e clientes de IA são carregados quando o respectivo job precisa deles. `/status` funciona sem carregar modelos ou processar PDFs. O primeiro uso de cada componente ainda paga seu custo de carregamento. Os logs `api_startup` e `api_full_pipeline_import` mostram essas durações no servidor.
+Os logs registram tempos de renderização, verificação da API e carregamento do backend: `ui_render`, `ui_api_health`, `api_startup` e `api_full_pipeline_import`. Esperas por cotas e interrupções aparecem no progresso.
 
 ## API e armazenamento
 
 | Endpoint | Função |
 | --- | --- |
 | `POST /analyze/upload` | Envia o PDF e inicia o mapa; retorna um `job_id`. |
-| `GET /job/{job_id}` | Retorna progresso, resultado e estado da organização. |
-| `POST /job/{job_id}/organize-map` | Retoma a organização interrompida na mesma sessão. |
-| `POST /analyze/full` | Executa o pipeline completo com LangGraph/RAG. |
-| `GET /status` | Informa disponibilidade da API e configuração do provedor. |
+| `GET /job/{job_id}` | Consulta progresso, resultado e estado da organização. |
+| `POST /job/{job_id}/organize-map` | Retoma a organização na mesma sessão. |
+| `POST /analyze/full` | Executa a análise completa com LangGraph e RAG. |
+| `GET /status` | Consulta disponibilidade da API e configuração do provedor. |
 
-- **Mapa:** jobs, páginas e cache de lotes ficam em memória. Reiniciar o backend exige reenviar o PDF.
-- **Uploads:** arquivos ficam em `data/raw/uploads/`.
-- **Pipeline completo:** índice em `data/vector_db/` e checkpoints em `data/checkpoints/`, configuráveis por `CHROMA_PERSIST_DIRECTORY` e `LICIT_CHECKPOINT_DIR`.
+- **Mapa:** jobs, páginas e cache dos lotes ficam em memória. Após reiniciar o backend, o PDF precisa ser reenviado.
+- **Uploads:** `data/raw/uploads/`.
+- **Análise completa:** índice em `data/vector_db/` e checkpoints em `data/checkpoints/`, configuráveis por `CHROMA_PERSIST_DIRECTORY` e `LICIT_CHECKPOINT_DIR`.
 
-## Limitações
+## Escopo de processamento
 
-PDFs precisam de texto extraível; OCR não está implementado. Colunas, tabelas e continuações com diagramação irregular podem exigir conferência no original. Referências validadas comprovam a origem do texto, mas não garantem que todos os assuntos foram identificados ou que os agrupamentos estejam perfeitos.
+A leitura trabalha com PDFs que contêm texto extraível. A fidelidade de tabelas, colunas e continuações depende da diagramação do documento. As referências permitem conferir a origem das informações; a cobertura e o agrupamento dos assuntos dependem da identificação pela IA.
 
-O tempo depende do documento, das respostas e das cotas da API. O controle preventivo é local e não acompanha consumo externo; esperas e falhas são exibidas no progresso. A recuperação e a apresentação das fontes não exigem chamadas adicionais à IA.
+O tempo de processamento varia conforme o tamanho do edital, as respostas do modelo e as cotas do provedor. A recuperação e a apresentação das fontes usam o texto extraído, sem chamadas adicionais à IA.
 
 ## Testes
 
-Execute as suítes do mapa, cliente Gemini e fontes, sem credenciais reais:
+As suítes usam respostas simuladas, sem credenciais reais:
 
 ```bash
 python -m unittest discover -s tests -p 'test_topic*.py' -v
 python -m unittest discover -s tests -p 'test_gemini*.py' -v
 python -m unittest discover -s tests -p 'test_source*.py' -v
 python -m unittest discover -s tests -p 'test_pdf_tables.py' -v
+python -m unittest discover -s tests -p 'test_groq_account_scheduler.py' -v
 python -m unittest discover -s tests -p 'test_ui_runtime.py' -v
 python -m unittest discover -s tests -p 'test_api_startup.py' -v
 ```
 
-Os testes cobrem referências, agrupamento, cache, resultados parciais, cotas, retries, contexto original, tabelas e continuações entre páginas.
+A cobertura inclui organização de assuntos, referências, cache, resultados parciais, cotas, tentativas, fontes, tabelas, continuações entre páginas e inicialização dos serviços.
