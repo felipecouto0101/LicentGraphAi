@@ -8,6 +8,22 @@ from unittest.mock import patch
 
 
 class StartupTests(unittest.TestCase):
+    def test_package_exports_load_only_requested_component_and_cache_it(self):
+        import app.rag as rag_package
+        component = object()
+        module = types.SimpleNamespace(Node2EmbeddingGenerator=component)
+        rag_package.__dict__.pop('Node2EmbeddingGenerator', None)
+        try:
+            with patch.object(rag_package, 'import_module', return_value=module) as loader:
+                self.assertIs(rag_package.Node2EmbeddingGenerator, component)
+                self.assertIs(rag_package.Node2EmbeddingGenerator, component)
+                loader.assert_called_once_with('.node_2_embeddings', 'app.rag')
+                with self.assertRaises(AttributeError):
+                    getattr(rag_package, 'unknown_component')
+                self.assertIn('Node2EmbeddingGenerator', dir(rag_package))
+        finally:
+            rag_package.__dict__.pop('Node2EmbeddingGenerator', None)
+
     def test_real_api_and_status_work_with_heavy_imports_blocked(self):
         code = '''
 import importlib.abc, sys
@@ -19,6 +35,8 @@ class BlockHeavy(importlib.abc.MetaPathFinder):
             raise AssertionError('Unexpected startup dependency: ' + fullname)
 sys.meta_path.insert(0, BlockHeavy())
 from app.api.main import app
+import app.rag as rag_package
+assert rag_package.__file__ and rag_package.__file__.endswith('__init__.py')
 from fastapi.testclient import TestClient
 with TestClient(app) as client:
     for route in ['/', '/status']:
