@@ -101,6 +101,17 @@ class TestLangGraphWorkflow:
         
         assert callable(node_4_document_generator)
 
+    def test_node_4_skips_when_previous_node_failed(self, monkeypatch):
+        from app.rag import langgraph_workflow as module
+
+        def should_not_initialize(*args, **kwargs):
+            raise AssertionError("Nó 4 foi inicializado após falha do Nó 3")
+
+        monkeypatch.setattr(module, "Node4DocumentGenerator", should_not_initialize)
+        state = {"error": "Erro no Nó 3: explicação incompleta", "analysis": None}
+        assert module.node_4_document_generator(state) is state
+        assert state["error"].startswith("Erro no Nó 3")
+
     def test_real_mode_requires_key_without_silent_fallback(self, monkeypatch):
         from app.rag.langgraph_workflow import (
             is_mock_mode, validate_analysis_configuration

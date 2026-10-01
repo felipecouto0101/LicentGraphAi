@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import logging
 
 import pdfplumber
 
@@ -14,8 +15,10 @@ class PDFReader:
     def __init__(self):
         self.pdf_path: Path | None = None
         self.text: str = ""
+        self.pages_text: list[str] = []
+        self.pages_tables: list[list[dict]] = []
 
-    def load_pdf(self, pdf_path: str) -> str:
+    def load_pdf(self, pdf_path: str, preserve_lines: bool = False) -> str:
         """
         Carrega um arquivo PDF e extrai todo o texto.
 
@@ -35,22 +38,33 @@ class PDFReader:
             raise FileNotFoundError(f"Arquivo PDF não encontrado: {pdf_path}")
 
         try:
-            text_parts = []
+            # Preserva o índice original, inclusive páginas sem texto extraível.
             with pdfplumber.open(self.pdf_path) as pdf:
+                self.pages_text, self.pages_tables = [], []
                 for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(page_text)
+                    text = self._clean_text(page.extract_text() or "", preserve_lines=preserve_lines)
+                    self.pages_text.append(text)
+                    tables = []
+                    if preserve_lines:
+                        try:
+                            from .pdf_tables import extract_page_tables
+                            tables = extract_page_tables(page, text, self._clean_text)
+                        except Exception:
+                            logging.getLogger(__name__).warning("Não foi possível preservar a estrutura de tabelas desta página.")
+                    self.pages_tables.append(tables)
 
-            raw_text = "\n".join(text_parts)
-            self.text = self._clean_text(raw_text)
+
+            if preserve_lines:
+                from .pdf_tables import link_table_continuations
+                link_table_continuations(self.pages_tables)
+            self.text = "\n\n".join(text for text in self.pages_text if text)
             return self.text
 
         except Exception as e:
             raise PDFReadError(f"Erro ao ler PDF: {e!s}")
 
     @staticmethod
-    def _clean_text(text: str) -> str:
+    def _clean_text(text: str, preserve_lines: bool = False) -> str:
         """
         Limpa o texto extraído do PDF.
 
@@ -65,7 +79,8 @@ class PDFReader:
 
         # 2. Normalizar quebras de linha: 2+ quebras viram parágrafo, 1 vira espaço
         text = re.sub(r"\n{3,}", "\n\n", text)          # 3+ \n → parágrafo
-        text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)    # \n isolado → espaço
+        if not preserve_lines:
+            text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
 
         # 3. Normalizar espaços múltiplos
         text = re.sub(r"[ \t]{2,}", " ", text)

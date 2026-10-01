@@ -14,6 +14,7 @@ from typing import Optional, Dict, List
 import os
 import logging
 import re
+import unicodedata
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -202,23 +203,40 @@ class Node4DocumentGenerator:
         Returns:
             Categoria do documento
         """
-        document_lower = document.lower()
-        
-        # Categorias de documentos
-        category_keywords = {
-            "habilitacao": ["cnpj", "cpf", "rg", "cnh", "inscrição estadual"],
-            "tecnica": ["iso", "atestado", "certificação", "técnica", "qualidade"],
-            "fiscal": ["fiscal", "tributária", "imposto", "balanço", "demonstrativo"],
-            "juridica": ["contrato social", "estatuto", "ata", "procuração"],
-            "trabalhista": ["clt", "fgts", "inss", "trabalhista"]
+        normalized = self._normalize_document(document)
+        # Use palavras inteiras: "ata" não deve aparecer dentro de "contratada".
+        categories = {
+            "trabalhista": r"\b(fgts|cndt|trabalhist\w*|previdenciari\w*|dctfweb|esocial|gfip)\b",
+            "economica": r"\b(balanc\w*|falencia|liquidez|solvencia|patrimonio|dre|demonstrac\w* contabeis)\b",
+            "tecnica": r"\b(crea|cau|art|rrt|atestado|certificac\w* tecnica|vistoria|acervo tecnico)\b",
+            "fiscal": r"\b(fiscal|tributari\w*|fazenda|imposto|contribuintes)\b",
+            "juridica": r"\b(contrato social|estatuto|ato constitutivo|procuracao|junta comercial)\b",
+            "proposta": r"\b(proposta|planilha|bdi|orcamento|cronograma|composic\w* de custo)\b",
+            "habilitacao": r"\b(cnpj|cpf|rg|cnh|inscricao estadual)\b",
         }
-        
-        for category, keywords in category_keywords.items():
-            for keyword in keywords:
-                if keyword in document_lower:
-                    return category
+        for category, pattern in categories.items():
+            if re.search(pattern, normalized):
+                return category
         
         return "outros"
+
+    @staticmethod
+    def _normalize_document(document: str) -> str:
+        without_accents = "".join(
+            char for char in unicodedata.normalize("NFKD", document.casefold())
+            if not unicodedata.combining(char)
+        )
+        return re.sub(r"[^\w]+", " ", without_accents).strip()
+
+    @classmethod
+    def _document_key(cls, document: str) -> str:
+        normalized = cls._normalize_document(document)
+        if normalized in {"cnpj", "inscricao no cnpj", "prova de inscricao no cnpj"}:
+            return "prova inscricao cnpj"
+        if normalized in {"prova de regularidade relativa ao fgts",
+                          "certidoes de regularidade com o fgts"}:
+            return "regularidade fgts"
+        return normalized
     
     def categorize_documents(self, documents: List[str]) -> dict:
         """
@@ -234,8 +252,10 @@ class Node4DocumentGenerator:
             "habilitacao": [],
             "tecnica": [],
             "fiscal": [],
+            "economica": [],
             "juridica": [],
             "trabalhista": [],
+            "proposta": [],
             "outros": []
         }
         
@@ -278,7 +298,8 @@ class Node4DocumentGenerator:
         """
         return {
             "documento": document,
-            "obrigatorio": True,
+            # O Nó 3 informa apenas o nome, sem prova de obrigatoriedade.
+            "obrigatorio": None,
             "status": "pendente",
             "observacoes": ", ".join(requirements) if requirements else "",
             "prazo": None
@@ -354,6 +375,7 @@ class Node4DocumentGenerator:
         """
         total_documentos = 0
         obrigatorios = 0
+        indeterminados = 0
         opcionais = 0
         
         for category, data in checklist.items():
@@ -362,12 +384,15 @@ class Node4DocumentGenerator:
                 for item in data["itens"]:
                     if item.get("obrigatorio", False):
                         obrigatorios += 1
+                    elif item.get("obrigatorio") is None:
+                        indeterminados += 1
                     else:
                         opcionais += 1
         
         return {
             "total_documentos": total_documentos,
             "obrigatorios": obrigatorios,
+            "a_confirmar": indeterminados,
             "opcionais": opcionais,
             "categorias": len(checklist)
         }
@@ -441,8 +466,9 @@ class Node4DocumentGenerator:
         seen: set = set()
         unique_docs: List[str] = []
         for doc in documentation:
-            if doc not in seen and doc.strip():
-                seen.add(doc)
+            key = self._document_key(doc) if isinstance(doc, str) else ""
+            if key and key not in seen:
+                seen.add(key)
                 unique_docs.append(doc)
 
         if not unique_docs:

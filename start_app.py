@@ -14,20 +14,27 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 
 
-def wait_for_api(url: str, timeout: int = 60, interval: float = 2.0) -> bool:
+def wait_for_api(url: str, process: subprocess.Popen, timeout: int = 180, interval: float = 2.0) -> bool:
     """Aguarda a API ficar disponível, verificando o endpoint /status."""
     print(f"Aguardando API em {url} (timeout: {timeout}s)...", flush=True)
-    start = time.time()
-    while time.time() - start < timeout:
+    start = time.monotonic()
+    last_error = None
+    while time.monotonic() - start < timeout:
+        exit_code = process.poll()
+        if exit_code is not None:
+            print(f"ERRO: processo FastAPI terminou com código {exit_code}.", flush=True)
+            return False
         try:
             with urllib.request.urlopen(f"{url}/status", timeout=3) as resp:
                 if resp.status == 200:
                     return True
-        except Exception:
-            pass
+                last_error = f"/status respondeu HTTP {resp.status}"
+        except Exception as exc:
+            last_error = str(exc)
         time.sleep(interval)
-        elapsed = int(time.time() - start)
+        elapsed = int(time.monotonic() - start)
         print(f"  Aguardando FastAPI iniciar... ({elapsed}s)", flush=True)
+    print(f"ERRO: /status não respondeu em {timeout}s. Última tentativa: {last_error}", flush=True)
     return False
 
 
@@ -61,20 +68,20 @@ if __name__ == "__main__":
     # Iniciar FastAPI
     fastapi_process = start_fastapi()
 
-    # Aguardar API ficar pronta (dependências pesadas levam ~25s no primeiro load)
-    api_ready = wait_for_api("http://127.0.0.1:8002", timeout=90)
+    # Aguardar a API e detectar se o subprocesso encerra durante a inicialização.
+    api_ready = wait_for_api("http://127.0.0.1:8002", fastapi_process)
 
     if not api_ready:
         print()
-        print("ERRO: FastAPI não respondeu em 90 segundos.")
-        print("Verifique se todas as dependências estão instaladas:")
-        print("  pip install -r requirements.txt")
-        fastapi_process.terminate()
+        print("Veja o erro do Uvicorn acima. Para executá-lo isoladamente:")
+        print("  python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002 --log-level debug")
+        if fastapi_process.poll() is None:
+            fastapi_process.terminate()
         sys.exit(1)
 
     print()
-    print("FastAPI rodando em: http://127.0.0.1:8000")
-    print("Swagger UI:         http://127.0.0.1:8000/docs")
+    print("FastAPI rodando em: http://127.0.0.1:8002")
+    print("Swagger UI:         http://127.0.0.1:8002/docs")
     print()
 
     # Iniciar Streamlit

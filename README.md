@@ -1,182 +1,116 @@
-# LicitGraphAi — Analisador Autônomo de Editais de Licitação
+# LicitGraphAi
 
-Sistema inteligente para análise automática de editais de licitação pública (Lei 14.133/2021). Faz upload de um PDF, extrai o texto, gera embeddings, consulta o banco vetorial via RAG e usa IA para responder perguntas objetivas sobre o edital.
+Aplicação em Python que transforma editais em PDF em um **mapa navegável de temas e subtemas**, com páginas e trechos de origem para conferência.
 
----
+A interface atual permite enviar o documento, buscar assuntos e consultar suas fontes. A organização usa IA, sem categorias fixas; chat e explicações sob demanda ainda não estão disponíveis.
 
-## Como funciona
+## Arquitetura e tecnologias
 
-```
-PDF → Extração de texto → Chunks → Embeddings (ChromaDB)
-                                          ↓
-                              Busca vetorial por 8 queries temáticas
-                                          ↓
-                              Chunks relevantes → LLM (Groq)
-                                          ↓
-                              Relatório estruturado por pergunta
-```
+| Componente | Tecnologias | Responsabilidade |
+| --- | --- | --- |
+| Interface | Streamlit | Upload, busca, navegação por temas, fontes e acompanhamento do progresso. |
+| API | FastAPI, Uvicorn e Pydantic | Endpoints, jobs em background e retomada da organização. |
+| Processamento do PDF | pdfplumber e LangChain | Extração de texto e tabelas, identificação de seções e divisão em chunks com referências de página. |
+| Organização com IA | Gemini via REST ou Groq via LangChain | Identificação de subtemas e agrupamento em temas, com saída estruturada. |
+| Recuperação de fontes | Python | Validação das referências, recuperação do contexto original e apresentação de parágrafos, listas e tabelas. |
+| Pipeline completo | LangGraph, Sentence Transformers e ChromaDB | Orquestração da análise completa, embeddings e recuperação de contexto com RAG. |
 
-### Pipeline de nós (LangGraph)
+**O mapa de assuntos usa o texto dos chunks diretamente, sem embeddings ou ChromaDB.** O pipeline completo com RAG permanece disponível em `/analyze/full`, fora da interface atual.
 
-| Nó | Responsabilidade |
-|----|-----------------|
-| **Nó 1** | Lê o PDF, limpa o texto e fragmenta em chunks por seção |
-| **Nó 2** | Gera embeddings com `sentence-transformers` e armazena no ChromaDB |
-| **Nó 3** | Consulta RAG: busca os chunks mais relevantes por query temática e envia ao LLM |
-| **Nó 4** | Categoriza os documentos exigidos (habilitação, fiscal, técnica, etc.) em checklist |
+### Fluxo principal: mapa de assuntos
 
-### Perguntas respondidas pelo RAG
+1. **Upload:** a interface envia o PDF à API, que cria um job e inicia o processamento em background.
+2. **Extração:** o leitor preserva páginas, linhas e tabelas; identifica seções e divide o texto em chunks.
+3. **Identificação:** a IA recebe o texto em lotes e identifica subtemas, indicando IDs e linhas das fontes.
+4. **Validação e agrupamento:** o backend verifica as referências; a IA consolida os assuntos em temas. Lotes inválidos podem ser corrigidos ou subdivididos.
+5. **Apresentação:** o backend recupera o contexto no PDF original, deduplica sobreposições e vincula continuações identificáveis. A interface exibe o mapa, as fontes e o progresso.
 
-1. Posso participar? *(requisitos de habilitação)*
-2. Quais são os prazos?
-3. Quanto custa e como pago?
-4. Como será a seleção ou avaliação?
-5. O que devo entregar ou produzir?
-6. Quais são as regras de eliminação?
-7. Quais documentos são exigidos?
-8. Pontos críticos e riscos
+Se houver uma interrupção, os lotes validados ficam disponíveis como mapa parcial. Quando ainda não há subtemas validados, a interface apresenta o índice original e o motivo da interrupção.
 
-Para cada pergunta, o sistema busca os chunks mais relevantes no ChromaDB por similaridade vetorial e os envia ao LLM com um prompt focado — sem processar o edital inteiro de uma vez.
+### Fluxo completo: análise com RAG
 
----
+Disponível pela API, utiliza LangGraph para executar quatro etapas: **leitura e chunking → embeddings e ChromaDB → análise com LLM e contexto recuperado → geração de checklist**. Usa Groq e mantém checkpoints em disco para retomada.
 
-## Stack
+## Executar localmente
 
-- **Python 3.11+**
-- **LangGraph** — orquestração do pipeline com estado compartilhado
-- **LangChain** — chunking e integração com modelos
-- **pdfplumber** — extração de texto de PDFs
-- **sentence-transformers** (`all-MiniLM-L6-v2`) — geração de embeddings
-- **ChromaDB** — banco vetorial para busca semântica
-- **Groq API** + **Qwen 3.8 27B** — modelo LLM para análise
-- **FastAPI** — API REST para upload e processamento
-- **Streamlit** — interface web
-
----
-
-## Instalação
+Use Python 3.11 ou 3.12. Na raiz do projeto, pelo Git Bash:
 
 ```bash
-# 1. Clone o repositório
-git clone <repo>
-cd LicitGraphAi
-
-# 2. Crie e ative o ambiente virtual
-python -m venv venv
-venv\Scripts\activate      # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# 3. Instale as dependências
-pip install -r requirements.txt
-
-# 4. Configure as variáveis de ambiente
+python -m venv .venv
+source .venv/Scripts/activate
+python -m pip install -r requirements.txt
 cp .env.example .env
-# Edite .env com sua chave da API Groq
 ```
 
-Obtenha sua chave em: https://console.groq.com/
+No Linux/macOS, a ativação é `source .venv/bin/activate`. No PowerShell, use `.\.venv\Scripts\Activate.ps1` e `Copy-Item .env.example .env`.
 
-Sem `GROQ_API_KEY` válida, a análise real retorna um erro de configuração antes de processar o PDF. Para testes sem API, defina explicitamente `NODE3_MOCK_MODE=true`. A interface identifica esse modo e marca os resultados como demonstração.
+Configure o mapa com Gemini no `.env`:
 
----
+```dotenv
+TOPIC_LLM_PROVIDER=gemini
+GEMINI_API_KEY=sua_chave
+GEMINI_MODEL=gemini-3.5-flash-lite
+NODE3_MOCK_MODE=false
 
-## Configuração (.env)
-
-```env
-GROQ_API_KEY=sua_chave_aqui
-NODE3_MOCK_MODE=false        # padrão: IA real | true: demonstração explícita
-DEFAULT_MODEL=qwen/qwen3.8-27b
-CHROMA_PERSIST_DIRECTORY=./data/vector_db
-CHROMA_COLLECTION_NAME=licitacoes
+GEMINI_RPM_BUDGET=10
+GEMINI_TPM_BUDGET=100000
+GEMINI_RPD_BUDGET=500
+GEMINI_OUTPUT_TOKEN_BUDGET=8192
 ```
 
----
+Esses valores são **orçamentos locais configuráveis**, não cotas universais ou saldo consultado no provedor. Ajuste-os aos limites da sua conta. Mantenha o `.env` fora do Git.
 
-## Uso
-
-### Interface web (recomendado)
+Inicie API e interface:
 
 ```bash
 python start_app.py
 ```
 
-Aguarde as mensagens de inicialização (~25s no primeiro start por conta do carregamento dos modelos).
+- Interface: [localhost:8501](http://localhost:8501)
+- Documentação da API: [127.0.0.1:8002/docs](http://127.0.0.1:8002/docs)
 
-- Streamlit: http://localhost:8501
-- API Swagger: http://127.0.0.1:8000/docs
-
-Ou inicie manualmente em dois terminais:
+Para executar separadamente, use um terminal para cada comando:
 
 ```bash
-# Terminal 1
-python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000
-
-# Terminal 2
-streamlit run app/streamlit_app.py
+python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002
+python -m streamlit run app/streamlit_app.py
 ```
 
-### Programático
+### Alternativa: Groq
 
-```python
-from dotenv import load_dotenv
-load_dotenv()
+Configure `TOPIC_LLM_PROVIDER=groq` e `GROQ_API_KEY`. Chaves extras usam `GROQ_API_KEY_2`, `GROQ_API_KEY_3` etc. Para contas de organizações diferentes, `GROQ_INDEPENDENT_ACCOUNTS=true` permite procurar outra conta disponível antes de esperar. O padrão é `false`.
 
-from app.rag.langgraph_workflow import run_licit_graph_pipeline
+O pipeline completo requer a configuração Groq mesmo quando o mapa usa Gemini. Reinicie o backend após alterar o `.env`.
 
-result = run_licit_graph_pipeline("data/raw/uploads/edital.pdf")
+## API e armazenamento
 
-# Respostas RAG por pergunta
-for key, answer in result["analysis"]["rag_answers"].items():
-    print(f"\n{answer['label']}")
-    print(answer["resposta"])
+| Endpoint | Função |
+| --- | --- |
+| `POST /analyze/upload` | Envia o PDF e inicia o mapa; retorna um `job_id`. |
+| `GET /job/{job_id}` | Retorna progresso, resultado e estado da organização. |
+| `POST /job/{job_id}/organize-map` | Retoma a organização interrompida na mesma sessão. |
+| `POST /analyze/full` | Executa o pipeline completo com LangGraph/RAG. |
+| `GET /status` | Informa disponibilidade da API e configuração do provedor. |
 
-# Checklist de documentos
-print(result["checklist"]["resumo"])
-```
+- **Mapa:** jobs, páginas e cache de lotes ficam em memória. Reiniciar o backend exige reenviar o PDF.
+- **Uploads:** arquivos ficam em `data/raw/uploads/`.
+- **Pipeline completo:** índice em `data/vector_db/` e checkpoints em `data/checkpoints/`, configuráveis por `CHROMA_PERSIST_DIRECTORY` e `LICIT_CHECKPOINT_DIR`.
 
----
+## Limitações
 
-## Estrutura do projeto
+PDFs precisam de texto extraível; OCR não está implementado. Colunas, tabelas e continuações com diagramação irregular podem exigir conferência no original. Referências validadas comprovam a origem do texto, mas não garantem que todos os assuntos foram identificados ou que os agrupamentos estejam perfeitos.
 
-```
-LicitGraphAi/
-├── app/
-│   ├── api/
-│   │   └── main.py               # FastAPI: endpoints /upload, /analyze, /status
-│   ├── rag/
-│   │   ├── pdf_reader.py         # Extração e limpeza de texto do PDF
-│   │   ├── text_chunker.py       # Fragmentação por parágrafos/seções
-│   │   ├── node_1_reader_chunker.py
-│   │   ├── node_2_embeddings.py  # Embeddings + ChromaDB
-│   │   ├── node_3_analyzer.py    # RAG + LLM (Groq)
-│   │   ├── node_4_document_generator.py  # Checklist categorizado
-│   │   └── langgraph_workflow.py # Orquestração completa
-│   └── streamlit_app.py          # Interface web
-├── data/
-│   ├── raw/uploads/              # PDFs enviados (ignorado pelo git)
-│   ├── processed/                # Dados processados (ignorado pelo git)
-│   └── vector_db/                # ChromaDB (ignorado pelo git)
-├── tests/                        # Testes automatizados
-├── examples/                     # Scripts de exemplo
-├── docs/
-├── start_app.py                  # Inicia FastAPI + Streamlit
-├── .env.example
-└── requirements.txt
-```
-
----
+O tempo depende do documento, das respostas e das cotas da API. O controle preventivo é local e não acompanha consumo externo; esperas e falhas são exibidas no progresso. A recuperação e a apresentação das fontes não exigem chamadas adicionais à IA.
 
 ## Testes
 
-```bash
-pytest tests/ -v
-```
-
----
-
-## Desenvolvimento
+Execute as suítes do mapa, cliente Gemini e fontes, sem credenciais reais:
 
 ```bash
-black app/
-ruff check app/
+python -m unittest discover -s tests -p 'test_topic*.py' -v
+python -m unittest discover -s tests -p 'test_gemini*.py' -v
+python -m unittest discover -s tests -p 'test_source*.py' -v
+python -m unittest discover -s tests -p 'test_pdf_tables.py' -v
 ```
+
+Os testes cobrem referências, agrupamento, cache, resultados parciais, cotas, retries, contexto original, tabelas e continuações entre páginas.

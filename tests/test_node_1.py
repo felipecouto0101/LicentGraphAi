@@ -106,6 +106,22 @@ class TestNode1ReaderChunker:
         assert node.text_chunker is not None
         assert node.chunk_by_sections is True
     
+    def test_page_number_is_preserved_for_each_chunk(self, monkeypatch):
+        node = Node1ReaderChunker()
+        monkeypatch.setattr(node.pdf_reader, "validate_pdf", lambda path: True)
+        def load(path):
+            node.pdf_reader.pages_text = [
+                "Objeto da contratação de serviços de manutenção.", "",
+                "Prazo de entrega de 30 dias após assinatura.",
+            ]
+            return "\n\n".join(node.pdf_reader.pages_text)
+        monkeypatch.setattr(node.pdf_reader, "load_pdf", load)
+        monkeypatch.setattr(node.pdf_reader, "get_page_count", lambda: 3)
+
+        result = node.process_pdf("exemplo.pdf")
+        assert {chunk["metadata"]["page"] for chunk in result["chunks"]} == {1, 3}
+        assert len({chunk["metadata"]["chunk_id"] for chunk in result["chunks"]}) == result["total_chunks"]
+
     def test_process_invalid_pdf(self):
         """Testa processamento de PDF inválido."""
         node = Node1ReaderChunker()

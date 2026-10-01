@@ -1,511 +1,271 @@
-"""
-Interface Streamlit para LicitGraphAi
-
-Frontend para upload de PDFs e visualização de resultados.
-"""
-
-import streamlit as st
+"""Etapa atual: organização e navegação do mapa, sem chat ou explicações."""
+import time
+import re
+import html
+from app.rag.source_display import evidence_blocks
+from app.rag.pdf_tables import table_html
 import requests
-import json
-from pathlib import Path
+import streamlit as st
 
-# Configuração da página
-st.set_page_config(
-    page_title="LicitGraphAi - Analisador de Editais",
-    page_icon="📄",
-    layout="wide"
-)
-
-# URL da API FastAPI
+st.set_page_config(page_title="LicitGraphAi · Assuntos do edital", page_icon="🧭", layout="wide")
 API_URL = "http://127.0.0.1:8002"
 
 
-def _render_job_progress(job_id: str, api_url: str):
-    """Faz polling do job e renderiza o progresso em tempo real."""
-    import time as _time
-
+def _api_error(response):
     try:
-        r = requests.get(f"{api_url}/job/{job_id}", timeout=5)
-        if r.status_code != 200:
-            st.error("Erro ao consultar progresso.")
+        return response.json().get("detail", "Não foi possível concluir a solicitação.")
+    except ValueError:
+        return f"A API respondeu com erro {response.status_code}."
+
+
+def _reset():
+    for key in ("result", "job_id", "topic_search", "theme_choice", "selected_theme", "conversation", "selected_topic"):
+        st.session_state.pop(key, None)
+
+
+def _prepare(api_url, file):
+    try:
+        response = requests.post(f"{api_url}/analyze/upload",
+            files={"file": (file.name, file.getvalue(), "application/pdf")}, timeout=40)
+        if response.status_code != 200:
+            st.error(_api_error(response))
             return
-        job = r.json()
-    except Exception as e:
-        st.warning(f"Aguardando resposta da API... ({e})")
-        _time.sleep(3)
+        _reset()
+        st.session_state["job_id"] = response.json()["job_id"]
         st.rerun()
+    except requests.RequestException:
+        st.error("Não foi possível enviar o PDF. Confira se a API está em execução.")
+
+
+def _poll(api_url, job_id):
+    try:
+        response = requests.get(f"{api_url}/job/{job_id}", timeout=8)
+        if response.status_code != 200:
+            st.error(_api_error(response))
+            if st.button("Enviar novamente"):
+                _reset()
+                st.rerun()
+            return
+        job = response.json()
+    except requests.RequestException:
+        st.warning("A conexão com a API foi interrompida. O processamento pode continuar no backend.")
+        if st.button("Verificar novamente"):
+            st.rerun()
         return
-
-    status = job.get("status", "")
-    prog   = job.get("progress", {})
-
-    if status == "done":
-        # Análise concluída — armazena resultado e rerenderiza
-        st.session_state["result"] = {
-            "result": job.get("result", {}),
-            "analysis_mode": job.get("analysis_mode", "real"),
-        }
-        st.session_state.pop("job_id", None)
+    if job["status"] == "done":
+        result = job.get("result") or {}
+        if result.get("map_version") != 4 or not result.get("topic_map"):
+            st.error("Atualize e reinicie a aplicação para preparar o novo mapa.")
+            if st.button("Voltar ao envio"):
+                _reset()
+                st.rerun()
+            return
+        result["filename"] = job.get("file", "Edital em PDF")
+        st.session_state["result"] = result
         st.rerun()
+    elif job["status"] == "error":
+        st.error(job.get("error") or "Não foi possível ler o PDF.")
+        if st.button("Voltar ao envio"):
+            _reset()
+            st.rerun()
         return
-
-    if status == "error":
-        st.error(f"❌ Erro na análise: {job.get('error', 'desconhecido')}")
-        st.session_state.pop("job_id", None)
-        return
-
-    # Status running / queued — mostra progresso
-    stage       = prog.get("stage", "Processando...")
-    query_atual = prog.get("query_atual", "")
-    query_num   = prog.get("query_num", 0)
-    query_total = prog.get("query_total", 0)
-    batch_atual = prog.get("batch_atual", 0)
-    batch_total = prog.get("batch_total", 0)
-    itens       = prog.get("itens_encontrados", 0)
-
-    st.info(f"⏳ **{stage}**")
-
-    if query_total > 0:
-        query_pct = query_num / query_total
-        st.progress(query_pct, text=f"Pergunta {query_num}/{query_total}: {query_atual}")
-
-    if batch_total > 0 and query_atual:
-        batch_pct = batch_atual / batch_total
-        st.progress(batch_pct, text=f"Trecho {batch_atual}/{batch_total} analisado")
-
-    if itens > 0:
-        st.caption(f"✅ {itens} itens encontrados até agora")
-
-    st.caption("A análise continua em background. Esta página atualiza automaticamente a cada 5s.")
-
-    # Auto-refresh a cada 5 segundos
-    _time.sleep(5)
+    progress = job.get("progress", {})
+    with st.container(border=True):
+        st.subheader("Preparando seu mapa")
+        st.write(progress.get("stage", "Aguardando processamento"))
+        total = progress.get("total", 0)
+        done = progress.get("completed", 0)
+        if total:
+            st.progress(min(done / total, 1), text=f"{done} de {total} etapas de organização concluídas")
+        activity = progress.get("activity_message")
+        if activity:
+            if progress.get("activity") in {"waiting", "retrying", "repairing", "splitting"}:
+                st.warning(activity)
+            else:
+                st.info(activity)
+        wait_until = progress.get("wait_until")
+        if isinstance(wait_until, (int, float)):
+            seconds = max(0, int(wait_until - time.time() + 0.999))
+            st.caption(f"Próxima tentativa em aproximadamente {seconds} segundos.")
+        if progress.get("provider"):
+            st.caption(f"Provedor: {progress['provider']} · Modelo: {progress.get('model', '')}")
+        st.caption("A IA organiza apenas nomes e agrupamentos. As cotas da API podem exigir pausas entre chamadas.")
+    time.sleep(3)
     st.rerun()
 
 
-def main():
-    """Função principal do Streamlit."""
-    
-    # Header
-    st.title("📄 LicitGraphAi - Analisador de Editais")
-    st.markdown("Sistema inteligente para análise automática de editais de licitação pública")
-    
-    # Sidebar
-    st.sidebar.title("Configurações")
-    api_url = st.sidebar.text_input("URL da API", value=API_URL)
-
+def _retry(api_url, job_id):
     try:
-        api_status = requests.get(f"{api_url}/status", timeout=3).json()
-        if not api_status.get("ready", True):
-            st.error(api_status.get("configuration_error", "Análise indisponível."))
-        if api_status.get("analysis_mode") == "demo":
-            st.warning(
-                "⚠️ Modo de demonstração: resultados simulados/heurísticos, "
-                "sem análise pela Groq. Não use estes resultados para avaliar um edital real."
-            )
+        response = requests.post(f"{api_url}/job/{job_id}/organize-map", timeout=10)
+        if response.status_code not in (200, 409):
+            st.error(_api_error(response))
+            return
+        st.session_state.pop("result", None)
+        st.rerun()
     except requests.RequestException:
-        pass
-    
-    # Tabs
-    tab1, tab2, tab3 = st.tabs(["Análise", "Status", "Sobre"])
-    
-    with tab1:
-        st.header("📤 Upload e Análise de Edital")
-        
-        # Upload do PDF
-        uploaded_file = st.file_uploader(
-            "Selecione o arquivo PDF do edital",
-            type="pdf",
-            help="Selecione um arquivo PDF contendo o edital da licitação"
-        )
-        
-        # Perfil da empresa (opcional)
-        st.subheader("Perfil da Empresa (Opcional)")
-        company_name = st.text_input("Nome da Empresa")
-        company_cnpj = st.text_input("CNPJ")
-        
-        company_profile = None
-        if company_name or company_cnpj:
-            company_profile = {
-                "name": company_name,
-                "cnpj": company_cnpj
-            }
-        
-        # Botão de análise
-        if uploaded_file is not None:
-            st.info(f"Arquivo selecionado: {uploaded_file.name}")
+        st.warning("Não foi possível confirmar a retomada. Verifique o andamento antes de reenviar o PDF.")
 
-            if st.button("🚀 Iniciar Análise", type="primary"):
-                try:
-                    files = {"file": uploaded_file}
-                    data = {}
-                    if company_profile:
-                        data["company_profile"] = json.dumps(company_profile)
 
-                    response = requests.post(
-                        f"{api_url}/analyze/upload",
-                        files=files,
-                        data=data,
-                        timeout=30,
-                    )
+def _pages(pages):
+    values = sorted(set(pages))
+    ranges = []
+    for value in values:
+        if ranges and value == ranges[-1][1] + 1:
+            ranges[-1][1] = value
+        else:
+            ranges.append([value, value])
+    return ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in ranges)
 
-                    if response.status_code == 200:
-                        job_data = response.json()
-                        st.session_state["job_id"] = job_data["job_id"]
-                        st.session_state["api_url"] = api_url
-                        st.session_state["result"] = None
-                        st.rerun()
+
+def _visible_themes(themes, search):
+    search = search.casefold().strip()
+    visible = []
+    for theme in themes:
+        children = [sub for sub in theme["subtopics"] if not search or search in
+                    (theme["title"] + " " + sub["title"] + " " + " ".join(sub.get("source_titles", []))).casefold()]
+        if children:
+            visible.append((theme, children))
+    return visible
+
+
+def _count_label(count, organized):
+    singular, plural = ("assunto", "assuntos") if organized else ("subseção", "subseções")
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _subtopic_card(sub, organized):
+    generic = sub["title"] in ("Visão geral da seção", "Visão geral e cláusulas da seção")
+    with st.container(border=True):
+        st.subheader("Conteúdo da seção" if generic and not organized else sub["title"])
+        st.caption("Páginas do PDF: " + _pages(sub["pages"]))
+        if generic and not organized:
+            st.caption("Esta seção ainda não foi dividida em assuntos pela IA.")
+        evidence = sub.get("evidence", [])
+        if evidence:
+            with st.expander("Conferir trechos de origem"):
+                for block in sub.get("source_blocks", evidence_blocks(evidence)):
+                    with st.container(border=True):
+                        label = ("Fonte: páginas " + _pages(block["pages"]) if len(block.get("pages", [])) > 1
+                                 else f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF")
+                        if block.get("item"):
+                            label += f" · item {block['item']}"
+                        st.caption(label)
+                        if block.get("table"):
+                            st.subheader(block["table"]["title"])
+                            st.caption("Tabela extraída do PDF; células mescladas preservadas quando identificadas.")
+                            st.markdown(table_html(block["table"]), unsafe_allow_html=True)
+                            continue
+                        if block.get("expanded"):
+                            st.caption("Item recuperado entre páginas consecutivas do PDF." if block.get("context_status") == "clause_across_pages"
+                                       else "Contexto recuperado do texto original do PDF.")
+                        elif block.get("context_status") == "selected_only":
+                            st.caption("Trecho selecionado; não foi possível recuperar a continuação com segurança.")
+                        if block.get("continuation_pending"):
+                            st.caption("O item pode continuar na página seguinte; este bloco contém somente a página indicada.")
+                        # Escape document content; preserve lists and paragraph spacing
+                        # using the interface font instead of rendering PDF text as Markdown.
+                        st.markdown('<div style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65">'
+                                    + html.escape(block["text"]) + '</div>', unsafe_allow_html=True)
+
+
+def _theme_label(title):
+    return re.sub(r"^(?:das|dos|da|do)\s+", "", title.strip(), flags=re.I)
+
+
+def _topic_browser(api_url, job_id, result):
+    themes = result["topic_map"]
+    complete = result.get("organization_status") == "done"
+    partial = result.get("organization_status") == "partial"
+    organized = complete or partial
+    with st.container(border=True):
+        st.caption(result.get("filename", "Edital em PDF"))
+        st.header("Mapa parcial de assuntos" if partial else "Assuntos do seu edital" if complete else "Índice original do PDF")
+        st.caption("Subtemas validados · organização incompleta" if partial else "Organizado com IA" if complete
+                   else "Organização com IA interrompida · índice estrutural disponível")
+        columns = st.columns(3)
+        columns[0].metric("Temas" if organized else "Seções", len(themes))
+        columns[1].metric("Assuntos" if organized else "Subseções identificadas",
+            sum(1 for t in themes for sub in t["subtopics"] if organized or sub["title"] not in
+                ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")))
+        columns[2].metric("Páginas", result.get("page_count") or "—")
+    if not complete:
+        with st.container(border=True):
+            st.subheader("Organização pendente")
+            st.warning("A organização foi interrompida. Os subtemas já validados estão disponíveis abaixo; o restante ainda está pendente."
+                       if partial else "A IA ainda não produziu subtemas validados. Abaixo aparece somente o índice original do PDF.")
+            with st.expander("Detalhes da interrupção", expanded=True):
+                st.write(result.get("organization_error") or "Organização pendente.")
+            if st.button("Retomar organização com IA", type="primary"):
+                _retry(api_url, job_id)
+    with st.container(border=True):
+        st.subheader("Mapa de assuntos" if organized else "Navegação pelas seções do PDF")
+        st.write("Os subtemas aparecem dentro de cada tema. Abra ou feche os blocos para explorar o mapa." if organized
+                 else "Estas são seções do documento; não representam subtemas gerados pela IA.")
+        search = st.text_input("Buscar um assunto" if organized else "Buscar uma seção",
+                              placeholder="Ex.: documentos, proposta, pagamento", key="topic_search")
+        visible = _visible_themes(themes, search)
+        if not visible:
+            st.info("Nenhum resultado encontrado. Tente outra palavra.")
+        else:
+            st.caption(f"{len(visible)} de {len(themes)} " + ("temas" if organized else "seções"))
+            for index, (theme, children) in enumerate(visible):
+                label = _theme_label(theme["title"])
+                real_children = [sub for sub in children if organized or sub["title"] not in
+                                 ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")]
+                count = _count_label(len(real_children), organized) if real_children else "subtemas pendentes"
+                with st.expander(f"{label} · {count}", expanded=bool(search) or index == 0):
+                    if label != theme["title"]:
+                        st.caption("Título de origem: " + theme["title"])
+                    if not real_children:
+                        pages = sorted({page for sub in children for page in sub["pages"]})
+                        st.caption("Páginas do PDF: " + _pages(pages))
+                        st.info("Subtemas ainda não identificados para esta seção.")
                     else:
-                        st.error(f"❌ Erro ao iniciar análise: {response.text}")
+                        for sub in real_children:
+                            _subtopic_card(sub, organized)
+        st.caption("As páginas indicam a origem das informações. O mapa ainda não gera explicações.")
+    missing = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
+    if missing:
+        with st.container(border=True):
+            st.subheader("Conferência de anexos")
+            with st.expander(f"Referências sem seção identificada · {len(missing)}"):
+                st.write("Estes anexos foram mencionados, mas não identificados como seções neste arquivo. Podem estar em arquivos separados ou ter outro formato de título.")
+                for reference in missing:
+                    st.caption(reference["label"] + " · mencionado nas páginas " + _pages(reference["pages"]))
 
-                except requests.exceptions.ConnectionError:
-                    st.error("❌ Não foi possível conectar à API.")
-                except Exception as e:
-                    st.error(f"❌ Erro: {str(e)}")
 
-        # Polling de progresso enquanto job estiver rodando
-        if st.session_state.get("job_id") and not st.session_state.get("result"):
-            job_id  = st.session_state["job_id"]
-            api_url_job = st.session_state.get("api_url", api_url)
-            _render_job_progress(job_id, api_url_job)
-
-        # Exibe resultado quando pronto
-        if st.session_state.get("result"):
-            st.success("✅ Análise concluída com sucesso!")
-            display_results(st.session_state["result"])
-            if st.button("🔄 Nova Análise"):
-                st.session_state.pop("job_id", None)
-                st.session_state.pop("result", None)
-                st.rerun()
-
-        if not uploaded_file and not st.session_state.get("job_id") and not st.session_state.get("result"):
-            st.info("👆 Selecione um arquivo PDF para começar")
-    
-    with tab2:
-        st.header("📊 Status do Sistema")
-
-        if st.button("🔄 Atualizar Status"):
-            st.rerun()
-
+def main():
+    st.title("🧭 LicitGraphAi")
+    st.write("Um mapa organizado para entender o que seu edital aborda.")
+    stored = st.session_state.get("result")
+    if stored and stored.get("map_version") != 4:
+        _reset()
+        st.info("Envie novamente o PDF para organizar os assuntos com IA.")
+    with st.sidebar:
+        st.header("Seu documento")
+        with st.expander("Conexão com a API"):
+            api_url = st.text_input("Endereço", value=API_URL).rstrip("/")
         try:
-            response = requests.get(f"{api_url}/status", timeout=5)
-            if response.status_code == 200:
-                status = response.json()
-
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Status", status["status"])
-                col2.metric("Versão", status["version"])
-                col3.metric("Orquestração", status["orchestration"])
-
-                st.subheader("Nós Disponíveis")
-                for node in status["nodes"]:
-                    st.success(f"✅ {node}")
-            else:
-                st.error("❌ Não foi possível obter o status do sistema")
-
-        except requests.exceptions.ConnectionError:
-            st.warning("⚠️ API não está respondendo em `http://127.0.0.1:8000`.")
-            st.info(
-                "A API pode estar ainda inicializando (leva ~25s no primeiro start). "
-                "Clique em **Atualizar Status** após alguns instantes."
-            )
-            st.code("python start_app.py", language="bash")
-        except requests.exceptions.Timeout:
-            st.warning("⚠️ API demorou para responder. Clique em Atualizar Status.")
-        except Exception as e:
-            st.error(f"❌ Erro: {str(e)}")
-    
-    with tab3:
-        st.header("ℹ️ Sobre o LicitGraphAi")
-        
-        st.markdown("""
-        ### Sistema de Análise de Editais
-        
-        O LicitGraphAi é um sistema inteligente para análise automática de editais de licitação pública (Nova Lei 14.133).
-        
-        ### Funcionalidades
-        
-        - 📄 **Leitura e Fragmentação**: Extrai texto do PDF e fragmenta em partes menores
-        - 🔍 **Embeddings**: Gera representações vetoriais do texto
-        - 🤖 **Análise com IA**: Analisa requisitos usando inteligência artificial
-        - 📋 **Checklist**: Gera checklist de documentos necessários
-        
-        ### Stack Tecnológica
-        
-        - Python 3.11+
-        - LangChain + LangGraph
-        - Groq API + OpenAI GPT-OSS-120b
-        - sentence-transformers
-        - ChromaDB
-        - FastAPI + Streamlit
-        
-        ### Como Usar
-        
-        1. Certifique-se de que a API FastAPI está rodando:
-           ```bash
-           python -m uvicorn app.api.main:app --reload --host 127.0.0.1 --port 8000
-           ```
-        
-        2. Execute o Streamlit:
-           ```bash
-           streamlit run app/streamlit_app.py
-           ```
-        
-        3. Faça upload do PDF do edital
-        4. Clique em "Iniciar Análise"
-        5. Aguarde o processamento
-        6. Visualize os resultados
-        """)
-
-
-def display_results(result):
-    """Exibe os resultados da análise de forma legível."""
-
-    st.header("📊 Resultados da Análise")
-    if result.get("analysis_mode") == "demo":
-        st.warning("⚠️ Resultado de demonstração, sem análise pela Groq.")
-
-    result_data = result.get("result", {})
-
-    result_tab1, result_tab2, result_tab3, result_tab4, result_tab5 = st.tabs([
-        "📈 Resumo",
-        "❓ Perguntas Respondidas",
-        "🔍 Análise de Requisitos",
-        "📋 Checklist de Documentos",
-        "🗂 JSON Completo",
-    ])
-
-    analysis      = result_data.get("analysis") or {}
-    structured    = analysis.get("structured_analysis", {})
-    critical      = analysis.get("critical_analysis", {})
-    llm_analysis  = analysis.get("llm_analysis")  # None em mock mode
-    checklist_data = result_data.get("checklist") or {}
-    resumo        = checklist_data.get("resumo", {})
-    checklist     = checklist_data.get("checklist", {})
-
-    # ── helpers locais ────────────────────────────────────────────
-    def dedup_ordered(lst):
-        seen, out = set(), []
-        for x in lst:
-            x = x.strip()
-            if x and x not in seen:
-                seen.add(x)
-                out.append(x)
-        return out
-
-    def aggregate(field):
-        items = []
-        for data in structured.values():
-            items.extend(data.get(field, []))
-        return dedup_ordered(items)
-
-    def aggregate_critical(field):
-        items = []
-        for data in critical.values():
-            items.extend(data.get(field, []))
-        return dedup_ordered(items)
-
-    all_tech      = aggregate("technical_requirements")
-    all_docs_raw  = aggregate("documentation")
-    all_deadlines = aggregate("deadlines")
-    all_risks     = aggregate_critical("critical_points")
-    all_recs      = dedup_ordered(aggregate_critical("recommendations"))
-
-    # ──────────────────────────────────────────────────────────────
-    # TAB 1 — Resumo executivo
-    # ──────────────────────────────────────────────────────────────
-    with result_tab1:
-        chunks_count     = result_data.get("chunks_count", 0)
-        embeddings_count = (result_data.get("embeddings") or {}).get("total_embeddings", 0)
-        docs_count       = resumo.get("total_documentos", 0)
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Trechos extraídos",   chunks_count)
-        col2.metric("Embeddings gerados",  embeddings_count)
-        col3.metric("Documentos exigidos", docs_count)
-        col4.metric("Seções analisadas",   analysis.get("total_chunks_processed", 0))
-
-        # Nível de risco
-        st.divider()
-        st.subheader("Avaliação de Risco")
-
-        if critical:
-            risk_counts = {"ALTO": 0, "MEDIO": 0, "BAIXO": 0}
-            for d in critical.values():
-                risk_counts[d.get("risk_level", "BAIXO")] += 1
-
-            overall = "ALTO" if risk_counts["ALTO"] else ("MEDIO" if risk_counts["MEDIO"] else "BAIXO")
-            icon    = {"ALTO": "🔴", "MEDIO": "🟡", "BAIXO": "🟢"}[overall]
-            st.markdown(f"### {icon} Risco Geral: {overall}")
-
-            rc1, rc2, rc3 = st.columns(3)
-            rc1.metric("🔴 Alto",  risk_counts["ALTO"])
-            rc2.metric("🟡 Médio", risk_counts["MEDIO"])
-            rc3.metric("🟢 Baixo", risk_counts["BAIXO"])
-        else:
-            st.info("Avaliação de risco não disponível.")
-
-        # Prazos — versão resumida no Resumo (máx 5)
-        if all_deadlines:
-            st.divider()
-            st.subheader("⏰ Principais Prazos")
-            for d in all_deadlines[:5]:
-                st.write(f"• {d}")
-            if len(all_deadlines) > 5:
-                st.caption(f"+ {len(all_deadlines) - 5} prazos adicionais na aba Análise de Requisitos.")
-
-        # Recomendações prioritárias
-        if all_recs:
-            st.divider()
-            st.subheader("💡 Recomendações")
-            for rec in all_recs[:4]:
-                st.success(f"✔ {rec}")
-
-        # Objeto do edital (só disponível com LLM)
-        if llm_analysis and llm_analysis.get("objeto"):
-            st.divider()
-            st.subheader("📌 Objeto do Edital")
-            st.info(llm_analysis["objeto"])
-
-    # ──────────────────────────────────────────────────────────────
-    # TAB 2 — Perguntas e Respostas RAG
-    # ──────────────────────────────────────────────────────────────
-    with result_tab2:
-        rag_answers = analysis.get("rag_answers", {})
-
-        if not rag_answers:
-            st.info(
-                "ℹ️ As respostas por pergunta estão disponíveis apenas com IA real. "
-                "Configure `NODE3_MOCK_MODE=false` e `GROQ_API_KEY` no `.env`."
-            )
-        else:
-            risk_icon = {"ALTO": "🔴", "MEDIO": "🟡", "BAIXO": "🟢"}
-
-            for key, label, _ in analysis.get("_rag_queries_meta", []) or [
-                # fallback: percorre na ordem original se não vier metadado
-                (k, v["label"], None) for k, v in rag_answers.items()
-            ]:
-                ans = rag_answers.get(key, {})
-                if not ans:
-                    continue
-
-                risco = ans.get("nivel_risco", "BAIXO")
-                icon  = risk_icon.get(risco, "⚪")
-                label_display = ans.get("label", label)
-
-                with st.expander(f"{icon} {label_display}", expanded=True):
-                    resposta = ans.get("resposta", "")
-                    if resposta:
-                        st.markdown(f"**{resposta}**")
-
-                    detalhes = ans.get("detalhes", [])
-                    if detalhes:
-                        st.markdown("")
-                        for item in detalhes:
-                            st.write(f"• {item}")
-
-                    obs = ans.get("observacao", "")
-                    if obs:
-                        st.caption(f"ℹ️ {obs}")
-
-    # ──────────────────────────────────────────────────────────────
-    # TAB 3 — Análise de Requisitos
-    # ──────────────────────────────────────────────────────────────
-    with result_tab3:
-        if not structured:
-            st.info("Análise de requisitos não disponível.")
-        else:
-            # Requisitos técnicos
-            if all_tech:
-                with st.expander(f"⚙️ Requisitos Técnicos — {len(all_tech)} item(ns)", expanded=True):
-                    for i, req in enumerate(all_tech, 1):
-                        st.write(f"**{i}.** {req}")
-            else:
-                st.info("Nenhum requisito técnico específico identificado no edital.")
-
-            # Prazos — todos aqui
-            if all_deadlines:
-                with st.expander(f"⏰ Prazos e Cronogramas — {len(all_deadlines)} item(ns)", expanded=True):
-                    for d in all_deadlines:
-                        st.write(f"• {d}")
-            else:
-                st.info("Nenhum prazo identificado.")
-
-            # Pontos críticos — colapsado por padrão, todos os válidos
-            if all_risks:
-                with st.expander(
-                    f"⚠️ Pontos Críticos — {len(all_risks)} identificados",
-                    expanded=False,
-                ):
-                    for i, risk in enumerate(all_risks, 1):
-                        st.warning(f"**{i}.** {risk}")
-            
-            # Todas as recomendações
-            if all_recs:
-                st.divider()
-                st.subheader("💡 Recomendações")
-                for rec in all_recs:
-                    st.success(f"✔ {rec}")
-
-    # ──────────────────────────────────────────────────────────────
-    # TAB 4 — Checklist de Documentos
-    # ──────────────────────────────────────────────────────────────
-    with result_tab4:
-        if not checklist:
-            st.info("Checklist não disponível. Nenhum documento foi identificado no edital.")
-        else:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total de documentos", resumo.get("total_documentos", 0))
-            col2.metric("Obrigatórios",         resumo.get("obrigatorios", 0))
-            col3.metric("Opcionais",            resumo.get("opcionais", 0))
-            col4.metric("Categorias",           resumo.get("categorias", 0))
-
-            st.divider()
-
-            category_labels = {
-                "habilitacao": ("🪪", "Habilitação Jurídica"),
-                "fiscal":      ("🧾", "Regularidade Fiscal"),
-                "tecnica":     ("⚙️", "Qualificação Técnica"),
-                "juridica":    ("⚖️", "Documentação Jurídica"),
-                "trabalhista": ("👷", "Regularidade Trabalhista"),
-                "outros":      ("📂", "Outros Documentos"),
-            }
-
-            for category, data in checklist.items():
-                icon, label = category_labels.get(category, ("📁", category.upper()))
-                itens = data.get("itens", [])
-                if not itens:
-                    continue
-
-                with st.expander(f"{icon} {label} — {len(itens)} documento(s)", expanded=True):
-                    # Cabeçalho da tabela
-                    hc = st.columns([0.04, 0.52, 0.22, 0.22])
-                    hc[1].markdown("**Documento**")
-                    hc[2].markdown("**Tipo**")
-                    hc[3].markdown("**Prazo**")
-                    st.markdown("---")
-
-                    for item in itens:
-                        doc_name    = item.get("documento", "—").title()
-                        obrigatorio = item.get("obrigatorio", True)
-                        status      = item.get("status", "pendente")
-                        prazo       = item.get("prazo")
-
-                        badge       = "🔴 Obrigatório" if obrigatorio else "🟡 Opcional"
-                        status_icon = {"pendente": "⬜", "ok": "✅", "faltando": "❌"}.get(status, "⬜")
-
-                        cols = st.columns([0.04, 0.52, 0.22, 0.22])
-                        cols[0].write(status_icon)
-                        cols[1].write(doc_name)
-                        cols[2].write(badge)
-                        cols[3].write(prazo if prazo else "—")
-
-    # ──────────────────────────────────────────────────────────────
-    # TAB 5 — JSON (debug)
-    # ──────────────────────────────────────────────────────────────
-    with result_tab5:
-        st.caption("Dados brutos retornados pela API — útil para debug.")
-        st.json(result)
+            response = requests.get(f"{api_url}/status", timeout=3)
+            status = response.json()
+            if not status.get("ready", True) or status.get("analysis_mode") == "demo":
+                st.warning("Configure a chave do provedor selecionado e desative o modo demonstração para organizar os assuntos.")
+        except (requests.RequestException, ValueError):
+            st.warning("API indisponível. Inicie o backend para enviar um PDF.")
+        file = st.file_uploader("Enviar edital", type="pdf")
+        busy = st.session_state.get("job_id") and not st.session_state.get("result")
+        if st.button("Organizar assuntos", type="primary", disabled=file is None or bool(busy), use_container_width=True):
+            _prepare(api_url, file)
+        st.caption("Nesta etapa, a IA cria temas e subtemas. Explicações e chat serão adicionados depois.")
+    if st.session_state.get("result") and st.session_state.get("job_id"):
+        _topic_browser(api_url, st.session_state["job_id"], st.session_state["result"])
+    elif st.session_state.get("job_id"):
+        _poll(api_url, st.session_state["job_id"])
+    else:
+        with st.container(border=True):
+            st.subheader("Comece pelo seu edital")
+            st.write("Envie um PDF na lateral. Vamos identificar suas seções e organizar os assuntos em nomes claros.")
+            st.caption("Cada assunto mantém as páginas e seções de origem para você consultar o documento.")
 
 
 if __name__ == "__main__":
