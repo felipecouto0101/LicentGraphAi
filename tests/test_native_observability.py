@@ -48,9 +48,10 @@ def test_verified_install_reuses_cache_and_repairs_changed_executable(tmp_path, 
     cache.mkdir()
     archive = cache / 'binary.zip'
     with zipfile.ZipFile(archive, 'w') as file:
-        file.writestr('folder/binary', 'original')
+        file.writestr('folder/bin/binary', 'original')
+        file.writestr('packaging/wrappers/binary', 'wrapper')
         file.writestr('assets/binary/readme.txt', 'directory with same name')
-    spec = {'url': 'https://github.com/example/binary.zip', 'sha256': native.checksum(archive), 'executable': 'binary'}
+    spec = {'url': 'https://github.com/example/binary.zip', 'sha256': native.checksum(archive), 'executable': 'bin/binary'}
     def no_network(*args, **kwargs):
         raise AssertionError('Cached archive must not be downloaded again')
     monkeypatch.setattr(native.requests, 'get', no_network)
