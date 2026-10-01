@@ -129,6 +129,10 @@ def write_configs(state_dir):
         memberlist_port = 7946 if name == 'loki' else 7947
         text += f'\nmemberlist:\n  bind_addr: [127.0.0.1]\n  bind_port: {memberlist_port}\n'
         text = text.replace('0.0.0.0:4318', '127.0.0.1:14318')
+        if name == 'tempo':
+            text += (f'\nlive_store:\n  wal:\n    path: {data}/live-store/traces\n'
+                     f'  shutdown_marker_dir: {data}/live-store/shutdown-marker\n'
+                     f'backend_scheduler:\n  local_work_path: {data}/scheduler\n')
         if name == 'loki':
             text = text.replace('common:\n', 'common:\n  instance_addr: 127.0.0.1\n', 1)
         (configs / (name + '.yaml')).write_text(text)

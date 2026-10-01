@@ -70,6 +70,9 @@ def test_configs_are_localhost_only_and_preserve_dashboard_links(tmp_path):
     assert '127.0.0.1:14318' in texts
     assert 'http_listen_address: 127.0.0.1' in texts
     assert 'matcherRegex' in texts
+    assert 'shutdown_marker_dir:' in texts
+    assert 'local_work_path:' in texts
+    assert '/var/tempo' not in texts
     assert 'state with spaces' in texts
     assert '/var/lib/grafana/dashboards' not in texts
 
