@@ -2,13 +2,39 @@
 import time
 import re
 import html
-from app.rag.source_display import evidence_blocks
-from app.rag.pdf_tables import table_html
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from app.ui_health import APIHealth
 import requests
 import streamlit as st
 
+logging.basicConfig(level=logging.INFO)
 st.set_page_config(page_title="LicitGraphAi · Assuntos do edital", page_icon="🧭", layout="wide")
 API_URL = "http://127.0.0.1:8002"
+logger = logging.getLogger(__name__)
+
+
+@st.cache_resource
+def _health_executor():
+    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="ui-health")
+
+
+@st.fragment(run_every=1)
+def _connection_status(api_url):
+    health = st.session_state.get("api_health")
+    if health is None:
+        health = st.session_state["api_health"] = APIHealth()
+    snapshot = health.poll(api_url, _health_executor())
+    if snapshot["state"] == "checking":
+        st.caption("Verificando conexão com a API…")
+    elif snapshot["state"] == "unavailable":
+        st.warning("API indisponível. Inicie o backend para enviar um PDF.")
+    else:
+        status = snapshot["status"]
+        if not status.get("ready", True) or status.get("analysis_mode") == "demo":
+            st.warning("Configure a chave do provedor e desative o modo demonstração.")
+        else:
+            st.caption("API disponível")
 
 
 def _api_error(response):
@@ -37,6 +63,7 @@ def _prepare(api_url, file):
         st.error("Não foi possível enviar o PDF. Confira se a API está em execução.")
 
 
+@st.fragment(run_every=3)
 def _poll(api_url, job_id):
     try:
         response = requests.get(f"{api_url}/job/{job_id}", timeout=8)
@@ -90,8 +117,6 @@ def _poll(api_url, job_id):
         if progress.get("provider"):
             st.caption(f"Provedor: {progress['provider']} · Modelo: {progress.get('model', '')}")
         st.caption("A IA organiza apenas nomes e agrupamentos. As cotas da API podem exigir pausas entre chamadas.")
-    time.sleep(3)
-    st.rerun()
 
 
 def _retry(api_url, job_id):
@@ -133,7 +158,8 @@ def _count_label(count, organized):
     return f"{count} {singular if count == 1 else plural}"
 
 
-def _subtopic_card(sub, organized):
+def _subtopic_card(sub, organized, source_key="sources"):
+    # Source imports and rendering run only after opening this subject.
     generic = sub["title"] in ("Visão geral da seção", "Visão geral e cláusulas da seção")
     with st.container(border=True):
         st.subheader("Conteúdo da seção" if generic and not organized else sub["title"])
@@ -142,8 +168,16 @@ def _subtopic_card(sub, organized):
             st.caption("Esta seção ainda não foi dividida em assuntos pela IA.")
         evidence = sub.get("evidence", [])
         if evidence:
-            with st.expander("Conferir trechos de origem"):
-                for block in sub.get("source_blocks", evidence_blocks(evidence)):
+            sources = st.expander("Conferir trechos de origem", key=source_key, on_change="rerun")
+            if not sources.open:
+                return
+            from app.rag.source_display import evidence_blocks
+            from app.rag.pdf_tables import table_html
+            with sources:
+                blocks = sub.get("source_blocks")
+                if blocks is None:
+                    blocks = evidence_blocks(evidence)
+                for block in blocks:
                     with st.container(border=True):
                         label = ("Fonte: páginas " + _pages(block["pages"]) if len(block.get("pages", [])) > 1
                                  else f"Fonte: página {block['page']}" if block["page"] is not None else "Fonte: trecho do PDF")
@@ -174,6 +208,7 @@ def _theme_label(title):
 
 def _topic_browser(api_url, job_id, result):
     themes = result["topic_map"]
+    theme_positions = {id(theme): position for position, theme in enumerate(themes)}
     complete = result.get("organization_status") == "done"
     partial = result.get("organization_status") == "partial"
     organized = complete or partial
@@ -213,7 +248,11 @@ def _topic_browser(api_url, job_id, result):
                 real_children = [sub for sub in children if organized or sub["title"] not in
                                  ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")]
                 count = _count_label(len(real_children), organized) if real_children else "subtemas pendentes"
-                with st.expander(f"{label} · {count}", expanded=bool(search) or index == 0):
+                theme_box = st.expander(f"{label} · {count}", expanded=bool(search) or index == 0,
+                                        key=f"theme:{job_id}:{theme_positions[id(theme)]}", on_change="rerun")
+                if not theme_box.open:
+                    continue
+                with theme_box:
                     if label != theme["title"]:
                         st.caption("Título de origem: " + theme["title"])
                     if not real_children:
@@ -221,8 +260,8 @@ def _topic_browser(api_url, job_id, result):
                         st.caption("Páginas do PDF: " + _pages(pages))
                         st.info("Subtemas ainda não identificados para esta seção.")
                     else:
-                        for sub in real_children:
-                            _subtopic_card(sub, organized)
+                        for child_index, sub in enumerate(real_children):
+                            _subtopic_card(sub, organized, source_key=f"sources:{job_id}:{theme_positions[id(theme)]}:{child_index}")
         st.caption("As páginas indicam a origem das informações. O mapa ainda não gera explicações.")
     missing = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
     if missing:
@@ -235,6 +274,7 @@ def _topic_browser(api_url, job_id, result):
 
 
 def main():
+    started = time.perf_counter()
     st.title("🧭 LicitGraphAi")
     st.write("Um mapa organizado para entender o que seu edital aborda.")
     stored = st.session_state.get("result")
@@ -245,13 +285,6 @@ def main():
         st.header("Seu documento")
         with st.expander("Conexão com a API"):
             api_url = st.text_input("Endereço", value=API_URL).rstrip("/")
-        try:
-            response = requests.get(f"{api_url}/status", timeout=3)
-            status = response.json()
-            if not status.get("ready", True) or status.get("analysis_mode") == "demo":
-                st.warning("Configure a chave do provedor selecionado e desative o modo demonstração para organizar os assuntos.")
-        except (requests.RequestException, ValueError):
-            st.warning("API indisponível. Inicie o backend para enviar um PDF.")
         file = st.file_uploader("Enviar edital", type="pdf")
         busy = st.session_state.get("job_id") and not st.session_state.get("result")
         if st.button("Organizar assuntos", type="primary", disabled=file is None or bool(busy), use_container_width=True):
@@ -266,6 +299,13 @@ def main():
             st.subheader("Comece pelo seu edital")
             st.write("Envie um PDF na lateral. Vamos identificar suas seções e organizar os assuntos em nomes claros.")
             st.caption("Cada assunto mantém as páginas e seções de origem para você consultar o documento.")
+
+    logger.info("ui_render duration_ms=%.1f has_result=%s", (time.perf_counter() - started) * 1000,
+                bool(st.session_state.get("result")))
+    # Render the shell first; the network check runs in a worker and only this
+    # fragment updates as the result becomes available.
+    with st.sidebar:
+        _connection_status(api_url)
 
 
 if __name__ == "__main__":

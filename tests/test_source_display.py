@@ -12,6 +12,12 @@ def evidence(line, quote, page=29, source='c1', **kw):
     return dict(line=line, quote=quote, page=page, source_id=source, chunk_id=1, **kw)
 
 
+class SourceBox:
+    open = True
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+
+
 class SourceDisplayTests(unittest.TestCase):
     def test_example_reflows_wrapped_sentences_and_preserves_list(self):
         rows = [evidence(1, '16.25 Quem prestar informação falsa estará'),
@@ -55,7 +61,7 @@ class SourceDisplayTests(unittest.TestCase):
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_subtopic_card')
         calls = []
         st = SimpleNamespace(container=lambda **kw: nullcontext(),
-            expander=lambda label: calls.append(('expander', label)) or nullcontext())
+            expander=lambda label, **kw: calls.append(('expander', label)) or SourceBox())
         for name in ('subheader', 'caption', 'markdown'):
             setattr(st, name, lambda text, _name=name, **kw: calls.append((_name, text)))
         namespace = dict(st=st, html=html, evidence_blocks=evidence_blocks, _pages=lambda p: '29')

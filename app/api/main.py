@@ -2,6 +2,11 @@
 API FastAPI para LicitGraphAi
 """
 
+import time
+from contextlib import asynccontextmanager
+
+_IMPORT_STARTED = time.perf_counter()
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
@@ -17,12 +22,19 @@ from app.rag.gemini_client import provider_name, validate_topic_configuration, G
 
 load_dotenv()
 
-from app.rag.langgraph_workflow import run_licit_graph_pipeline, is_mock_mode, validate_analysis_configuration
+from app.analysis_config import is_mock_mode, validate_analysis_configuration
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app):
+    logger.info("api_startup duration_ms=%.1f", (time.perf_counter() - _IMPORT_STARTED) * 1000)
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="LicitGraphAi API",
     description="API para análise automática de editais de licitação",
     version="1.0.0"
@@ -150,10 +162,15 @@ def _update_progress(job_id: str, **kwargs):
 
 def _run_pipeline_job(job_id: str, file_path: str, company_profile: Optional[dict]):
     """Executa o pipeline em background, publicando progresso."""
+    n3_module = None
     try:
         with _jobs_lock:
             _jobs[job_id]["status"] = "running"
-            _jobs[job_id]["progress"]["stage"] = "Iniciando pipeline..."
+            _jobs[job_id]["progress"]["stage"] = "Carregando pipeline completo..."
+
+        started = time.perf_counter()
+        from app.rag.langgraph_workflow import run_licit_graph_pipeline
+        logger.info("api_full_pipeline_import duration_ms=%.1f", (time.perf_counter() - started) * 1000)
 
         # Injeta callback de progresso no estado global acessível pelo Node 3
         import app.rag.node_3_analyzer as n3_module
@@ -181,8 +198,8 @@ def _run_pipeline_job(job_id: str, file_path: str, company_profile: Optional[dic
             _jobs[job_id]["status"] = "error"
             _jobs[job_id]["error"] = str(e)
     finally:
-        import app.rag.node_3_analyzer as n3_module
-        n3_module._progress_callback = None
+        if n3_module is not None:
+            n3_module._progress_callback = None
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

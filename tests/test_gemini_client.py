@@ -1,21 +1,29 @@
-import io
 import json
 import os
 import time
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+import httpx
+from google.genai.errors import ClientError, ServerError
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from app.rag import gemini_client as module
 
 
 def response(text='{"topics":[]}', finish='STOP'):
-    return {'candidates': [{'finishReason': finish, 'content': {'parts': [{'text': text}]}}],
-            'usageMetadata': {'promptTokenCount': 100, 'candidatesTokenCount': 30}}
+    return AIMessage(content=text, response_metadata={'finish_reason': finish},
+                     usage_metadata={'input_tokens': 100, 'output_tokens': 30, 'total_tokens': 130})
 
 
 def error(code, details=None, headers=None):
-    body = json.dumps({'error': {'details': details or []}}).encode()
-    return HTTPError('https://example.invalid', code, 'error', headers or {}, io.BytesIO(body))
+    cls = ServerError if code >= 500 else ClientError
+    return cls(code, {'error': {'message': 'test', 'details': details or []}},
+               response=httpx.Response(code, headers=headers or {}))
+
+
+class FakeLLM:
+    def __init__(self, callback): self.callback = callback
+    def invoke(self, messages, **kwargs):
+        return self.callback({'messages': messages, **kwargs})
 
 
 class GeminiTests(unittest.TestCase):
@@ -32,16 +40,18 @@ class GeminiTests(unittest.TestCase):
 
     def client(self, transport=None):
         return module.GeminiTopicClient(progress=lambda **kw: self.events.append(kw),
-                                       transport=transport or (lambda body: response()))
+                                       llm=FakeLLM(transport or (lambda body: response())))
 
-    def test_rest_configuration_and_json_schema(self):
+    def test_langchain_messages_and_json_schema(self):
         bodies = []
         client = self.client(lambda body: bodies.append(body) or response())
         self.assertEqual(client.invoke('system', {'passages': []}), {'topics': []})
-        config = bodies[0]['generationConfig']
-        self.assertEqual(config['maxOutputTokens'], 8192)
-        self.assertEqual(config['responseSchema']['required'], ['topics'])
-        self.assertEqual(config['thinkingConfig'], {'thinkingLevel': 'minimal'})
+        config = bodies[0]
+        self.assertEqual(config['response_mime_type'], 'application/json')
+        self.assertEqual(config['response_json_schema']['required'], ['topics'])
+        self.assertIsInstance(config['messages'][0], SystemMessage)
+        self.assertIsInstance(config['messages'][1], HumanMessage)
+        self.assertEqual(config['messages'][0].content, 'system')
         self.assertEqual(module.GeminiTopicClient._schema({'topics': []})['required'], ['themes'])
         self.assertEqual(client.state['minute'][0][1], 100)
 
@@ -103,16 +113,85 @@ class GeminiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'JSON inválido'):
             self.client(lambda body: response('{')).invoke('system', {})
 
-    def test_key_sent_as_header_not_url(self):
-        captured = []
-        class FakeResponse:
-            def __enter__(self): return io.StringIO(json.dumps(response()))
-            def __exit__(self, *args): pass
-        def open_request(request, timeout): captured.append(request); return FakeResponse()
-        with patch.object(module, 'urlopen', open_request):
-            module.GeminiTopicClient().invoke('system', {})
-        self.assertNotIn('test-secret', captured[0].full_url)
-        self.assertEqual(captured[0].get_header('X-goog-api-key'), 'test-secret')
+    def test_factory_uses_explicit_key_developer_api_and_no_internal_retries(self):
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'other-key', 'GOOGLE_GENAI_USE_VERTEXAI': 'true'}):
+            with patch('langchain_google_genai.ChatGoogleGenerativeAI') as factory:
+                factory.return_value.invoke.return_value = response()
+                client = module.GeminiTopicClient()
+                client.invoke('system', {})
+                client.invoke('system', {})
+        self.assertEqual(factory.call_count, 1)
+        options = factory.call_args.kwargs
+        self.assertEqual(options['api_key'], 'test-secret')
+        self.assertFalse(options['vertexai'])
+        self.assertEqual(options['max_retries'], 0)
+        self.assertEqual(options['max_tokens'], 8192)
+        self.assertEqual(options['thinking_level'], 'minimal')
+        self.assertEqual(options['timeout'], 120)
+
+    def test_real_langchain_adapter_without_network(self):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from google.genai import types
+        llm = ChatGoogleGenerativeAI(model='gemini-3.5-flash-lite', api_key='fake',
+                                    vertexai=False, max_retries=0, max_tokens=8192,
+                                    timeout=120, thinking_level='minimal', temperature=0.2)
+        result = types.GenerateContentResponse(candidates=[types.Candidate(
+            content=types.Content(role='model', parts=[types.Part(text='{"topics":[]}')]),
+            finish_reason='STOP')], usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=100, candidates_token_count=30, total_token_count=130))
+        with patch.object(llm.client.models, 'generate_content', return_value=result) as generate:
+            client = module.GeminiTopicClient(llm=llm)
+            self.assertEqual(client.invoke('system', {'passages': []}), {'topics': []})
+        config = generate.call_args.kwargs['config']
+        self.assertEqual(config.response_json_schema['required'], ['topics'])
+        self.assertEqual(config.max_output_tokens, 8192)
+        self.assertEqual(config.http_options.retry_options.attempts, 0)
+        self.assertEqual(client.state['minute'][0][1], 100)
+
+    def test_wrapped_sdk_error_preserves_retry_details(self):
+        calls = []
+        def transport(body):
+            calls.append(body)
+            if len(calls) == 1:
+                try:
+                    raise error(429, details=[{'retryDelay': '15s'}])
+                except ClientError as cause:
+                    raise RuntimeError('SDK wrapped error') from cause
+            return response()
+        self.client(transport).invoke('system', {})
+        self.assertEqual(len(calls), 2)
+        self.assertAlmostEqual(sum(self.waits), 16)
+
+    def test_real_sdk_does_not_add_hidden_retries(self):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        llm = ChatGoogleGenerativeAI(model='gemini-3.5-flash-lite', api_key='fake',
+                                    vertexai=False, max_retries=0, timeout=120)
+        # Exercise the real SDK retry layer, intercepting only the HTTP attempt.
+        with patch.object(llm.client._api_client, '_request_once', side_effect=error(503)) as request:
+            with self.assertRaisesRegex(RuntimeError, 'três novas tentativas'):
+                module.GeminiTopicClient(llm=llm, progress=lambda **kw: self.events.append(kw)).invoke('system', {})
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual([e['retry'] for e in self.events if e['activity'] == 'retrying'], [1, 2, 3])
+
+    def test_content_blocks_exclude_thoughts(self):
+        msg = response()
+        msg.content = [{'type': 'reasoning', 'reasoning': 'private'},
+                       {'type': 'text', 'text': '{"topics":[]}' }]
+        self.assertEqual(self.client(lambda body: msg).invoke('system', {}), {'topics': []})
+
+    def test_unknown_local_errors_are_not_retried(self):
+        with self.assertRaisesRegex(ValueError, 'configuration'):
+            self.client(lambda body: (_ for _ in ()).throw(ValueError('configuration'))).invoke('system', {})
+        self.assertEqual(self.waits, [])
+
+    def test_network_timeout_is_retried(self):
+        calls = []
+        def transport(body):
+            calls.append(body)
+            if len(calls) == 1: raise httpx.ReadTimeout('timeout')
+            return response()
+        self.client(transport).invoke('system', {})
+        self.assertEqual(len(calls), 2)
 
     def test_selection_and_missing_key(self):
         self.assertEqual(module.validate_topic_configuration(), 'gemini')

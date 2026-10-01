@@ -2,6 +2,7 @@
 langchain>=0.1.0
 langchain-community>=0.0.10
 langchain-groq>=0.1.0
+langchain-google-genai>=4.4.0,<5
 langgraph>=0.0.20
 
 # PDF Processing
@@ -22,7 +23,7 @@ python-multipart>=0.0.6
 requests>=2.31.0
 
 # Frontend
-streamlit>=1.28.0
+streamlit>=1.58.0,<2
 
 # Utilities
 python-dotenv>=1.0.0

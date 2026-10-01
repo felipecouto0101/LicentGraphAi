@@ -9,7 +9,7 @@ from types import SimpleNamespace
 class FrontendTests(unittest.TestCase):
     def test_wait_and_countdown_render_alongside_last_progress(self):
         calls = []
-        st = SimpleNamespace(container=lambda **kw: nullcontext())
+        st = SimpleNamespace(container=lambda **kw: nullcontext(), fragment=lambda **kw: lambda fn: fn)
         for name in ('subheader', 'write', 'progress', 'caption', 'warning', 'info', 'rerun'):
             setattr(st, name, lambda *args, _name=name, **kw: calls.append((_name, args, kw)))
         job = {'status': 'running', 'progress': {'stage': 'Identificando subtemas', 'completed': 2, 'total': 10,
