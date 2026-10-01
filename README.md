@@ -84,6 +84,10 @@ O pipeline completo requer a configuração Groq mesmo quando o mapa usa Gemini.
 
 Ambos os provedores usam LangChain. O cliente Gemini mantém controle local de cotas, tentativas e progresso; as tentativas internas do SDK ficam desativadas. Após atualizar esta versão, execute `python -m pip install -r requirements.txt` para instalar `langchain-google-genai`.
 
+### Carregamento da interface
+
+O inicializador abre API e interface sem aguardar o backend ficar pronto. A tela inicial aparece sem aguardar a API: a conexão é verificada em background, com resultado reutilizado por 15 segundos. Conexão e progresso são atualizados por fragmentos do Streamlit; temas fechados e fontes ainda não abertas não renderizam seu conteúdo. Logs `ui_render` e `ui_api_health` registram tempos no servidor. Requer Streamlit 1.58 ou superior; atualize as dependências e reinicie a interface.
+
 ## API e armazenamento
 
 | Endpoint | Função |
@@ -113,6 +117,7 @@ python -m unittest discover -s tests -p 'test_topic*.py' -v
 python -m unittest discover -s tests -p 'test_gemini*.py' -v
 python -m unittest discover -s tests -p 'test_source*.py' -v
 python -m unittest discover -s tests -p 'test_pdf_tables.py' -v
+python -m unittest discover -s tests -p 'test_ui_runtime.py' -v
 ```
 
 Os testes cobrem referências, agrupamento, cache, resultados parciais, cotas, retries, contexto original, tabelas e continuações entre páginas.
