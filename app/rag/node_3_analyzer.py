@@ -9,6 +9,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.rag.gemini_client import GeminiTopicClient, GeminiRequestTooLarge
+from app.rag.guardrails import validate_response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1112,7 +1113,7 @@ Regras:
                 system_msg, HumanMessage(content=prompt + correction)
             ])
             try:
-                parsed = self._parse_llm_json(response.content)
+                parsed = validate_response(self._parse_llm_json(response.content), "extraction")
                 if any(not isinstance(parsed.get(field), list) or
                        any(not isinstance(item, str) for item in parsed[field])
                        for field in fields):
@@ -1374,7 +1375,7 @@ Regras:
             SystemMessage(content="Redija apenas JSON válido, sem markdown."),
             HumanMessage(content=prompt),
         ])
-        parsed = self._parse_llm_json(response.content)
+        parsed = validate_response(self._parse_llm_json(response.content), "report")
         resumo = parsed.get("resumo")
         requisitos = parsed.get("requisitos")
         if not isinstance(resumo, str) or not resumo.strip():
@@ -1726,7 +1727,7 @@ Regras:
                     SystemMessage(content="Responda apenas JSON válido com todos os IDs recebidos."),
                     HumanMessage(content=prompt),
                 ])
-                parsed = self._parse_llm_json(response.content)
+                parsed = validate_response(self._parse_llm_json(response.content), "explanations")
                 rows = parsed.get("explicacoes") if isinstance(parsed, dict) else None
                 requested_ids = {entry["id"] for entry in missing}
                 if isinstance(rows, list):
