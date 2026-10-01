@@ -113,6 +113,7 @@ O tempo de processamento varia conforme o tamanho do edital, as respostas do mod
 As suítes usam respostas simuladas, sem credenciais reais:
 
 ```bash
+python -m pytest tests -m 'not integration' -q
 python -m unittest discover -s tests -p 'test_topic*.py' -v
 python -m unittest discover -s tests -p 'test_gemini*.py' -v
 python -m unittest discover -s tests -p 'test_source*.py' -v
@@ -146,3 +147,13 @@ logs para Loki e traces para Tempo. Grafana inclui um dashboard provisionado. A 
 A coleta é opcional e não exporta o conteúdo dos documentos ou credenciais.
 
 Veja [como executar e consultar a telemetria](docs/observability.md).
+
+## Guardrails de documentos
+
+O cliente Gemini separa as regras da aplicação do conteúdo do PDF, desativa
+ferramentas e valida o formato das respostas com Pydantic. Referências e citações
+continuam sujeitas às verificações de origem. Possíveis instruções dirigidas à IA
+são sinalizadas na interface com suas páginas, preservando o texto original.
+
+Esses controles reduzem riscos de prompt injection, mas não garantem a correção
+semântica das respostas. Veja [os controles, limites e testes](docs/guardrails.md).

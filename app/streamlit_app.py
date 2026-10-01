@@ -206,6 +206,17 @@ def _theme_label(title):
     return re.sub(r"^(?:das|dos|da|do)\s+", "", title.strip(), flags=re.I)
 
 
+def _security_notice(warnings):
+    if not warnings:
+        return
+    with st.container(border=True):
+        st.warning("Há trechos com possíveis instruções dirigidas à IA. Isso não comprova um ataque. "
+                   "O conteúdo foi preservado; confira as páginas indicadas.")
+        with st.expander("Páginas sinalizadas para revisão"):
+            for warning in warnings:
+                st.write(f"Página do PDF: {warning['page']}")
+
+
 def _topic_browser(api_url, job_id, result):
     themes = result["topic_map"]
     theme_positions = {id(theme): position for position, theme in enumerate(themes)}
@@ -223,6 +234,7 @@ def _topic_browser(api_url, job_id, result):
             sum(1 for t in themes for sub in t["subtopics"] if organized or sub["title"] not in
                 ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")))
         columns[2].metric("Páginas", result.get("page_count") or "—")
+    _security_notice(result.get("security_warnings", []))
     if not complete:
         with st.container(border=True):
             st.subheader("Organização pendente")

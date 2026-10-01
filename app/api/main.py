@@ -24,6 +24,7 @@ load_dotenv()
 
 from app.analysis_config import is_mock_mode, validate_analysis_configuration
 from app import telemetry
+from app.rag.guardrails import inspect_document
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -133,6 +134,9 @@ def _run_topic_job(job_id: str, file_path: str):
         chunks = parsed["chunks"]
         if not chunks:
             raise ValueError("O PDF não contém texto extraível.")
+        security_warnings = inspect_document(chunks)
+        if security_warnings:
+            telemetry.event('guardrail.document_flagged', pages=len(security_warnings))
         with telemetry.stage("map.structural_index"):
             topic_map = build_topic_map(chunks)
         session = {"chunks": chunks, "pages_text": parsed.get("pages_text", []),
@@ -143,6 +147,7 @@ def _run_topic_job(job_id: str, file_path: str):
             _documents[job_id] = session
             _jobs[job_id]["result"] = {"topic_map": topic_map, "map_version": 4,
                 "chunks_count": len(chunks), "page_count": parsed.get("page_count"),
+                "security_warnings": security_warnings,
                 "organization_status": "running", "organization_error": None,
                 "annex_references": inspect_annex_references(chunks)}
         _run_organization_job(job_id)
@@ -188,6 +193,7 @@ def _run_pipeline_job(job_id: str, file_path: str, company_profile: Optional[dic
                 _jobs[job_id]["status"] = "done"
                 _jobs[job_id]["result"] = {
                     "chunks_count": len(result.get("chunks", [])),
+                    "security_warnings": inspect_document(result.get("chunks", [])),
                     "embeddings": result.get("embeddings"),
                     "analysis": result.get("analysis"),
                     "checklist": result.get("checklist"),

@@ -9,6 +9,7 @@ import time
 from collections import deque
 
 from app import telemetry
+from app.rag.guardrails import protect_messages, validate_response, validate_text_response
 
 logger = logging.getLogger(__name__)
 _states = {}
@@ -112,6 +113,7 @@ class GeminiTopicClient:
         return self._invoke_messages_model([SystemMessage(content=system), HumanMessage(content=text)], schema)
 
     def _invoke_messages_model(self, messages, schema=None):
+        messages = protect_messages(messages)
         if self.llm is None:
             from langchain_google_genai import ChatGoogleGenerativeAI
             options = dict(model=self.model, api_key=self.key, vertexai=False,
@@ -120,9 +122,11 @@ class GeminiTopicClient:
             if self.model == 'gemini-3.5-flash-lite':
                 options['thinking_level'] = 'minimal'
             self.llm = ChatGoogleGenerativeAI(**options)
-        options = {}
+        options = dict(tools=[], functions=[],
+                       tool_config={'function_calling_config': {'mode': 'NONE'}},
+                       automatic_function_calling={'disable': True})
         if schema is not None:
-            options = dict(response_mime_type='application/json', response_json_schema=schema)
+            options.update(response_mime_type='application/json', response_json_schema=schema)
         return self.llm.invoke(messages, **options)
 
     @staticmethod
@@ -181,7 +185,8 @@ class GeminiTopicClient:
     def invoke(self, system, payload):
         text = json.dumps(payload, ensure_ascii=False)
         # Estimativa conservadora em bytes; o consumo real vem em usageMetadata.
-        estimated = len((system + text).encode('utf-8')) + 64
+        from langchain_core.messages import SystemMessage, HumanMessage
+        estimated = self._estimate([SystemMessage(content=system), HumanMessage(content=text)])
         schema = self._schema(payload)
         result = self._request(estimated, lambda: self._invoke_model(system, text, schema))
         try:
@@ -190,11 +195,19 @@ class GeminiTopicClient:
             raise ValueError('Gemini retornou JSON inválido; corrigir o formato.') from None
         if not isinstance(parsed, dict):
             raise ValueError('Gemini deve retornar um objeto JSON.')
-        return parsed
+        try:
+            return validate_response(parsed, 'identification' if 'passages' in payload else 'grouping')
+        except ValueError:
+            telemetry.event('guardrail.response_rejected', operation='topic_map', reason='contract')
+            raise
+
+    @staticmethod
+    def _estimate(messages):
+        return sum(len(message.content.encode('utf-8')) for message in protect_messages(messages)) + 64
 
     def invoke_messages(self, messages):
         """Shared quota/retry/telemetry path for the full analysis workflow."""
-        estimated = sum(len(str(message.content).encode('utf-8')) for message in messages) + 64
+        estimated = self._estimate(messages)
         return self._request(estimated, lambda: self._invoke_messages_model(messages))
 
     def _request(self, estimated, call):
@@ -233,6 +246,11 @@ class GeminiTopicClient:
                     reservation[1] = actual
             self._event('validating', 'Conferindo os assuntos e suas referências ao PDF.',
                         input_tokens=actual, output_tokens=usage.get('output_tokens'))
+            try:
+                validate_text_response(result)
+            except RuntimeError:
+                telemetry.event('guardrail.response_rejected', operation='gemini', reason='action')
+                raise
             finish = str(result.response_metadata.get('finish_reason', 'STOP')).split('.')[-1]
             if finish == 'MAX_TOKENS':
                 raise GeminiOutputTruncated('Resposta Gemini truncada; dividindo lote antes de publicar.')

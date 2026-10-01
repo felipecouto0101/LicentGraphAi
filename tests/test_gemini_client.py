@@ -50,7 +50,7 @@ class GeminiTests(unittest.TestCase):
         self.assertEqual(config['response_json_schema']['required'], ['topics'])
         self.assertIsInstance(config['messages'][0], SystemMessage)
         self.assertIsInstance(config['messages'][1], HumanMessage)
-        self.assertEqual(config['messages'][0].content, 'system')
+        self.assertIn(module.protect_messages([SystemMessage(content='system')])[0].content, config['messages'][0].content)
         self.assertEqual(module.GeminiTopicClient._schema({'topics': []})['required'], ['themes'])
         self.assertEqual(client.state['minute'][0][1], 100)
 
@@ -69,13 +69,13 @@ class GeminiTests(unittest.TestCase):
     def test_daily_local_limit_blocks_without_extra_call(self):
         with patch.dict(os.environ, {'GEMINI_RPD_BUDGET': '1'}):
             client = self.client()
-            client.invoke('system', {})
+            client.invoke('system', {'passages': []})
             with self.assertRaisesRegex(RuntimeError, 'diária local'):
-                client.invoke('system', {})
+                client.invoke('system', {'passages': []})
 
     def test_oversized_input_is_not_sent(self):
         with patch.dict(os.environ, {'GEMINI_TPM_BUDGET': '1'}):
-            with self.assertRaises(module.GeminiRequestTooLarge): self.client().invoke('system', {})
+            with self.assertRaises(module.GeminiRequestTooLarge): self.client().invoke('system', {'passages': []})
 
     def test_429_retries_with_delay_and_progress(self):
         calls = []
@@ -83,7 +83,7 @@ class GeminiTests(unittest.TestCase):
             calls.append(body)
             if len(calls) == 1: raise error(429, headers={'Retry-After': '12'})
             return response()
-        self.client(transport).invoke('system', {})
+        self.client(transport).invoke('system', {'passages': []})
         self.assertEqual(len(calls), 2)
         self.assertAlmostEqual(sum(self.waits), 13)
         self.assertTrue(any(e['activity'] == 'retrying' for e in self.events))
@@ -91,34 +91,34 @@ class GeminiTests(unittest.TestCase):
     def test_persistent_transient_errors_stop(self):
         calls = []
         def transport(body): calls.append(body); raise error(503)
-        with self.assertRaisesRegex(RuntimeError, 'três novas tentativas'): self.client(transport).invoke('system', {})
+        with self.assertRaisesRegex(RuntimeError, 'três novas tentativas'): self.client(transport).invoke('system', {'passages': []})
         self.assertEqual(len(calls), 4)
 
     def test_auth_error_has_no_secret_or_retry(self):
         with self.assertRaisesRegex(RuntimeError, 'credencial') as exc:
-            self.client(lambda body: (_ for _ in ()).throw(error(403))).invoke('system', {})
+            self.client(lambda body: (_ for _ in ()).throw(error(403))).invoke('system', {'passages': []})
         self.assertNotIn('test-secret', str(exc.exception)); self.assertEqual(self.waits, [])
 
     def test_daily_server_quota_stops_and_blocks_further_jobs(self):
         client = self.client(lambda body: (_ for _ in ()).throw(error(429, details=[{
             '@type': 'QuotaFailure', 'violations': [{'quotaId': 'GenerateRequestsPerDayPerProject'}]}])))
-        with self.assertRaisesRegex(RuntimeError, 'Cota Gemini indisponível'): client.invoke('system', {})
-        with self.assertRaisesRegex(RuntimeError, 'cinco minutos'): client.invoke('system', {})
+        with self.assertRaisesRegex(RuntimeError, 'Cota Gemini indisponível'): client.invoke('system', {'passages': []})
+        with self.assertRaisesRegex(RuntimeError, 'cinco minutos'): client.invoke('system', {'passages': []})
         self.assertEqual(self.waits, [])
 
     def test_truncation_and_invalid_json_are_not_published(self):
         with self.assertRaises(module.GeminiOutputTruncated):
-            self.client(lambda body: response('{', 'MAX_TOKENS')).invoke('system', {})
+            self.client(lambda body: response('{', 'MAX_TOKENS')).invoke('system', {'passages': []})
         with self.assertRaisesRegex(ValueError, 'JSON inválido'):
-            self.client(lambda body: response('{')).invoke('system', {})
+            self.client(lambda body: response('{')).invoke('system', {'passages': []})
 
     def test_factory_uses_explicit_key_developer_api_and_no_internal_retries(self):
         with patch.dict(os.environ, {'GOOGLE_API_KEY': 'other-key', 'GOOGLE_GENAI_USE_VERTEXAI': 'true'}):
             with patch('langchain_google_genai.ChatGoogleGenerativeAI') as factory:
                 factory.return_value.invoke.return_value = response()
                 client = module.GeminiTopicClient()
-                client.invoke('system', {})
-                client.invoke('system', {})
+                client.invoke('system', {'passages': []})
+                client.invoke('system', {'passages': []})
         self.assertEqual(factory.call_count, 1)
         options = factory.call_args.kwargs
         self.assertEqual(options['api_key'], 'test-secret')
@@ -157,7 +157,7 @@ class GeminiTests(unittest.TestCase):
                 except ClientError as cause:
                     raise RuntimeError('SDK wrapped error') from cause
             return response()
-        self.client(transport).invoke('system', {})
+        self.client(transport).invoke('system', {'passages': []})
         self.assertEqual(len(calls), 2)
         self.assertAlmostEqual(sum(self.waits), 16)
 
@@ -168,7 +168,7 @@ class GeminiTests(unittest.TestCase):
         # Exercise the real SDK retry layer, intercepting only the HTTP attempt.
         with patch.object(llm.client._api_client, '_request_once', side_effect=error(503)) as request:
             with self.assertRaisesRegex(RuntimeError, 'três novas tentativas'):
-                module.GeminiTopicClient(llm=llm, progress=lambda **kw: self.events.append(kw)).invoke('system', {})
+                module.GeminiTopicClient(llm=llm, progress=lambda **kw: self.events.append(kw)).invoke('system', {'passages': []})
         self.assertEqual(request.call_count, 4)
         self.assertEqual([e['retry'] for e in self.events if e['activity'] == 'retrying'], [1, 2, 3])
 
@@ -176,11 +176,11 @@ class GeminiTests(unittest.TestCase):
         msg = response()
         msg.content = [{'type': 'reasoning', 'reasoning': 'private'},
                        {'type': 'text', 'text': '{"topics":[]}' }]
-        self.assertEqual(self.client(lambda body: msg).invoke('system', {}), {'topics': []})
+        self.assertEqual(self.client(lambda body: msg).invoke('system', {'passages': []}), {'topics': []})
 
     def test_unknown_local_errors_are_not_retried(self):
         with self.assertRaisesRegex(ValueError, 'configuration'):
-            self.client(lambda body: (_ for _ in ()).throw(ValueError('configuration'))).invoke('system', {})
+            self.client(lambda body: (_ for _ in ()).throw(ValueError('configuration'))).invoke('system', {'passages': []})
         self.assertEqual(self.waits, [])
 
     def test_network_timeout_is_retried(self):
@@ -189,7 +189,7 @@ class GeminiTests(unittest.TestCase):
             calls.append(body)
             if len(calls) == 1: raise httpx.ReadTimeout('timeout')
             return response()
-        self.client(transport).invoke('system', {})
+        self.client(transport).invoke('system', {'passages': []})
         self.assertEqual(len(calls), 2)
 
     def test_selection_and_missing_key(self):
@@ -218,7 +218,7 @@ class GeminiTests(unittest.TestCase):
         messages = [SystemMessage(content='Explain'), HumanMessage(content='Source')]
         result = node._invoke_llm(messages)
         self.assertEqual(result.content, 'Resposta explicativa.')
-        self.assertEqual(calls[0]['messages'], messages)
+        self.assertEqual(calls[0]['messages'], module.protect_messages(messages))
         self.assertNotIn('response_json_schema', calls[0])
         self.assertIs(node.llm.state, topics.state)
         self.assertAlmostEqual(sum(self.waits), 6.1)
