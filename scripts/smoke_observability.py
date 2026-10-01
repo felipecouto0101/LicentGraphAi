@@ -28,7 +28,8 @@ def main():
         raise RuntimeError(label + ' did not become available')
     wait_for(lambda: get('/api/health')['database'] == 'ok', 'Grafana readiness')
     assert {item['uid'] for item in get('/api/datasources')} >= {'prometheus', 'loki', 'tempo'}
-    assert get('/api/dashboards/uid/licitgraphai')['dashboard']['panels']
+    panels = get('/api/dashboards/uid/licitgraphai')['dashboard']['panels']
+    assert panels
     os.environ['OBSERVABILITY_ENABLED'] = 'true'
     os.environ['OTEL_TRACES_SAMPLER_ARG'] = '1.0'
     marker = str(uuid.uuid4())
@@ -44,6 +45,11 @@ def main():
         prefix = '/api/datasources/proxy/uid/'
         wait_for(lambda: bool(get(prefix + 'prometheus/api/v1/query',
             {'query': 'licit_operations{stage="smoke.delivery",outcome="success"}'})['data']['result']), 'Prometheus metric')
+        for panel in panels:
+            if panel['datasource']['uid'] == 'prometheus':
+                query = panel['targets'][0]['expr']
+                assert get(prefix + 'prometheus/api/v1/query', {'query': query})['status'] == 'success'
+        print('Dashboard PromQL: OK')
         wait_for(lambda: bool(get(prefix + 'loki/loki/api/v1/query_range',
             {'query': '{service_name="licitgraphai-api"} |= "' + marker + '"',
              'start': str(time.time_ns() - 600_000_000_000), 'limit': 10})['data']['result']), 'Loki event')

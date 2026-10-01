@@ -136,3 +136,18 @@ def test_real_otlp_exporters_send_all_three_signals(monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_handled_failures_are_counted_when_trace_sampling_is_zero(capture):
+    from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
+    runtime, _, _, metrics = capture
+    unsampled = TracerProvider(sampler=ALWAYS_OFF)
+    runtime.tracer = unsampled.get_tracer('unsampled')
+    try:
+        with telemetry.stage('sampled.out') as span:
+            assert not span.is_recording()
+            telemetry.mark_failed(span)
+        assert any(n == 'licit_operations' and p.attributes['outcome'] == 'error'
+                   for n, p in points(metrics))
+    finally:
+        unsampled.shutdown()
