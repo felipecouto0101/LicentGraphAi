@@ -39,6 +39,12 @@ para configurar funções de embedding ou modificar configurações do Chroma.
 
 ## CI e revisão
 
+O job exporta todos os pacotes instalados, inclusive transitivos e ferramentas,
+para um manifesto fixado. O build oficial PyTorch `+cpu` é consultado pela versão
+pública correspondente; o inventário preserva a versão instalada e esse mapeamento.
+Outros builds locais são recusados. Não há exclusão de pacotes nem nova resolução
+de dependências durante a consulta.
+
 O pip-audit gera o **relatório bruto completo**, incluindo os quatro alertas.
 Não é usado `--ignore-vuln`. O job executa testes do Chroma real antes de avaliar
 `security/dependency-reviews.json` e publica também a avaliação de aplicabilidade.

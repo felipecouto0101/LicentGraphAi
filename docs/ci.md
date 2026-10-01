@@ -40,6 +40,9 @@ acesso aos modelos, use `python -m pytest tests -m integration`.
 
 A auditoria de dependências usa o manifesto completo `requirements.txt`, em um
 job separado. PyTorch é instalado pela distribuição CPU para evitar pacotes CUDA.
+O relatório consulta todos os pacotes instalados a partir de um inventário
+fixado, sem resolver novamente suas dependências. O sufixo oficial PyTorch `+cpu`
+é mapeado para a mesma versão pública; o inventário registra ambas.
 O relatório corresponde às versões resolvidas nessa execução; ele não representa
 automaticamente o ambiente instalado na máquina de cada desenvolvedor.
 
