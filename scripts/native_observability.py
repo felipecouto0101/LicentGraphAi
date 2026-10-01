@@ -93,7 +93,7 @@ def install_binary(name, spec, state_dir):
     with tempfile.TemporaryDirectory(dir=target.parent) as temp:
         unpacked = Path(temp)
         extract_archive(archive, unpacked)
-        matches = list(unpacked.rglob(spec['executable']))
+        matches = [path for path in unpacked.rglob(spec['executable']) if path.is_file()]
         if len(matches) != 1:
             raise ValueError(f'Executável de {name} não encontrado de forma única.')
         executable = matches[0]

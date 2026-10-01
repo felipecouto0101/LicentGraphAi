@@ -49,6 +49,7 @@ def test_verified_install_reuses_cache_and_repairs_changed_executable(tmp_path, 
     archive = cache / 'binary.zip'
     with zipfile.ZipFile(archive, 'w') as file:
         file.writestr('folder/binary', 'original')
+        file.writestr('assets/binary/readme.txt', 'directory with same name')
     spec = {'url': 'https://github.com/example/binary.zip', 'sha256': native.checksum(archive), 'executable': 'binary'}
     def no_network(*args, **kwargs):
         raise AssertionError('Cached archive must not be downloaded again')
