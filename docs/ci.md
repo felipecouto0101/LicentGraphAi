@@ -1,7 +1,7 @@
 # Integração contínua
 
-O workflow `CI` executa em pull requests para `main`, pushes em `main` e
-`ci/quality-security`, e por acionamento manual. Os jobs independentes rodam em
+O workflow `CI` executa em pull requests para `main`, pushes em `main`
+e por acionamento manual. Os jobs independentes rodam em
 paralelo. Execuções anteriores da mesma referência são canceladas quando uma nova
 execução começa.
 

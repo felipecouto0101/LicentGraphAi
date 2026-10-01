@@ -79,7 +79,7 @@ class TestNode3GroqConfig:
         
         assert node.model_name == "qwen/qwen3.8-27b"
         assert node.temperature == 0.3
-        assert node.max_tokens == 2000
+        assert node.max_tokens == 2500
     
     def test_custom_temperature_config(self):
         """Testa configuração customizada de temperatura."""
