@@ -9,8 +9,7 @@ Responsável por:
 """
 
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
-from typing import Optional, Dict, List
+from typing import Optional, List
 import os
 import logging
 import re

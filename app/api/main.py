@@ -17,6 +17,7 @@ import time
 from typing import Optional
 import logging
 import json
+import os
 from dotenv import load_dotenv
 from app.rag.gemini_client import provider_name, validate_topic_configuration, GeminiTopicClient
 
@@ -42,7 +43,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin.strip() for origin in os.getenv(
+        "API_CORS_ORIGINS", "http://localhost:8501,http://127.0.0.1:8501"
+    ).split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -370,4 +373,4 @@ def retry_map_organization(job_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

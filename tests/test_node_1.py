@@ -2,8 +2,6 @@ import pytest
 from app.rag.pdf_reader import PDFReader
 from app.rag.text_chunker import TextChunker
 from app.rag.node_1_reader_chunker import Node1ReaderChunker
-from pathlib import Path
-import tempfile
 
 
 class TestPDFReader:

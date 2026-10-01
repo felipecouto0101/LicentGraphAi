@@ -290,6 +290,8 @@ class Node3RequirementAnalyzer:
             if reset is not None:
                 quota[f"{kind}_reset_at"] = now + reset
         if "tokens_remaining" in quota or "requests_remaining" in quota:
+            # Numeric quota counters and account index only; no API credentials.
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             logger.info("Cota Groq (chave %s): tokens/min restantes=%s; requisições/dia restantes=%s",
                         getattr(self, "_current_key_idx", 0) + 1,
                         quota.get("tokens_remaining", "?"),
@@ -352,6 +354,8 @@ class Node3RequirementAnalyzer:
                     f"Groq: aguarde {wait:.0f}s pela renovação da cota de tokens; "
                     "o checkpoint continua salvo."
                 )
+            # Token counts and wait duration only; no API credentials.
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             logger.info("Cota de tokens insuficiente (%s < ~%s); aguardando %.0fs",
                         remaining, estimated, wait)
             time.sleep(wait)
@@ -441,6 +445,8 @@ class Node3RequirementAnalyzer:
                         if cap < self._output_budget():
                             self._output_token_cap = cap
                             self._rpm_budget_override = 1
+                            # Output token budget only; no API credentials.
+                            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                             logger.warning("Groq OTPM: reduzindo max_tokens para %s", cap)
                             continue
                     if not is_daily_limit and not is_output_limit and (
@@ -2331,7 +2337,7 @@ Regras:
                 total_itens = sum(len(v) for v in agg.values() if isinstance(v, list))
                 _progress_callback(
                     stage="Analisando edital com IA",
-                    query_atual=f"Processando trechos do edital",
+                    query_atual="Processando trechos do edital",
                     query_num=b_idx + 1,
                     query_total=total,
                     batch_atual=b_idx + 1,
