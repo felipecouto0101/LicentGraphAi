@@ -208,6 +208,7 @@ def _theme_label(title):
 
 def _topic_browser(api_url, job_id, result):
     themes = result["topic_map"]
+    theme_positions = {id(theme): position for position, theme in enumerate(themes)}
     complete = result.get("organization_status") == "done"
     partial = result.get("organization_status") == "partial"
     organized = complete or partial
@@ -248,7 +249,7 @@ def _topic_browser(api_url, job_id, result):
                                  ("Visão geral da seção", "Visão geral e cláusulas da seção", "Dados de abertura do edital")]
                 count = _count_label(len(real_children), organized) if real_children else "subtemas pendentes"
                 theme_box = st.expander(f"{label} · {count}", expanded=bool(search) or index == 0,
-                                        key=f"theme:{job_id}:{theme['title']}", on_change="rerun")
+                                        key=f"theme:{job_id}:{theme_positions[id(theme)]}", on_change="rerun")
                 if not theme_box.open:
                     continue
                 with theme_box:
@@ -260,7 +261,7 @@ def _topic_browser(api_url, job_id, result):
                         st.info("Subtemas ainda não identificados para esta seção.")
                     else:
                         for child_index, sub in enumerate(real_children):
-                            _subtopic_card(sub, organized, source_key=f"sources:{job_id}:{theme['title']}:{child_index}")
+                            _subtopic_card(sub, organized, source_key=f"sources:{job_id}:{theme_positions[id(theme)]}:{child_index}")
         st.caption("As páginas indicam a origem das informações. O mapa ainda não gera explicações.")
     missing = [r for r in result.get("annex_references", []) if r["status"] == "not_located"]
     if missing:
