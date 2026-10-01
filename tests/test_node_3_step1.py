@@ -1,5 +1,5 @@
 """
-Testes para Etapa 1 do Nó 3: Configuração básica do Groq + Llama 3.1
+Testes para Etapa 1 do Nó 3: Configuração básica do Gemini via LangChain
 
 TDD Approach: Testes escritos antes da implementação
 """
@@ -8,8 +8,8 @@ import pytest
 import os
 
 
-class TestNode3GroqConfig:
-    """Testes para configuração do Groq + Llama 3.1."""
+class TestNode3GeminiConfig:
+    """Testes para configuração do Gemini via LangChain."""
     
     def test_init_with_api_key(self):
         """Testa inicialização com chave da API."""
@@ -19,7 +19,7 @@ class TestNode3GroqConfig:
         node = Node3RequirementAnalyzer(api_key="test_key", mock_mode=True)
         
         assert node.api_key == "test_key"
-        assert node.model_name == "qwen/qwen3.8-27b"
+        assert node.model_name == "gemini-3.5-flash-lite"
         assert node.mock_mode is True
     
     def test_init_with_env_variable(self):
@@ -27,10 +27,10 @@ class TestNode3GroqConfig:
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
         
         # Salva variável de ambiente original
-        original_key = os.environ.get("GROQ_API_KEY")
+        original_key = os.environ.get("GEMINI_API_KEY")
         
         # Define variável de ambiente temporária
-        os.environ["GROQ_API_KEY"] = "env_test_key"
+        os.environ["GEMINI_API_KEY"] = "env_test_key"
         
         try:
             node = Node3RequirementAnalyzer(mock_mode=True)
@@ -38,9 +38,9 @@ class TestNode3GroqConfig:
         finally:
             # Restaura variável de ambiente original
             if original_key:
-                os.environ["GROQ_API_KEY"] = original_key
-            elif "GROQ_API_KEY" in os.environ:
-                del os.environ["GROQ_API_KEY"]
+                os.environ["GEMINI_API_KEY"] = original_key
+            elif "GEMINI_API_KEY" in os.environ:
+                del os.environ["GEMINI_API_KEY"]
     
     def test_init_custom_model(self):
         """Testa inicialização com modelo customizado."""
@@ -48,20 +48,20 @@ class TestNode3GroqConfig:
         
         node = Node3RequirementAnalyzer(
             api_key="test_key",
-            model_name="llama-3.1-70b-versatile",
+            model_name="gemini-2.5-flash",
             mock_mode=True
         )
         
-        assert node.model_name == "llama-3.1-70b-versatile"
+        assert node.model_name == "gemini-2.5-flash"
     
     def test_init_without_api_key_raises_error(self):
         """Testa erro quando não há chave da API."""
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
         
         # Remove variável de ambiente se existir
-        original_key = os.environ.get("GROQ_API_KEY")
-        if "GROQ_API_KEY" in os.environ:
-            del os.environ["GROQ_API_KEY"]
+        original_key = os.environ.get("GEMINI_API_KEY")
+        if "GEMINI_API_KEY" in os.environ:
+            del os.environ["GEMINI_API_KEY"]
         
         try:
             with pytest.raises(ValueError, match="API key é obrigatória"):
@@ -69,7 +69,7 @@ class TestNode3GroqConfig:
         finally:
             # Restaura variável de ambiente original
             if original_key:
-                os.environ["GROQ_API_KEY"] = original_key
+                os.environ["GEMINI_API_KEY"] = original_key
     
     def test_default_model_config(self):
         """Testa configuração padrão do modelo."""
@@ -77,7 +77,7 @@ class TestNode3GroqConfig:
         
         node = Node3RequirementAnalyzer(api_key="test_key", mock_mode=True)
         
-        assert node.model_name == "qwen/qwen3.8-27b"
+        assert node.model_name == "gemini-3.5-flash-lite"
         assert node.temperature == 0.3
         assert node.max_tokens == 2500
     
@@ -107,10 +107,10 @@ class TestNode3GroqConfig:
 
 
 class TestNode3BasicConnection:
-    """Testes básicos de conexão com Groq."""
+    """Testes básicos de conexão com Gemini."""
     
     def test_connection_test(self):
-        """Testa se a conexão com Groq pode ser estabelecida."""
+        """Testa se a conexão com Gemini pode ser estabelecida."""
         from app.rag.node_3_analyzer import Node3RequirementAnalyzer
         
         # Testa estrutura básica em mock mode

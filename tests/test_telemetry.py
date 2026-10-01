@@ -91,8 +91,8 @@ def test_caught_job_failure_is_not_reported_as_success(capture):
 
 def test_wait_and_usage_use_numeric_counts_only(capture):
     _, _, _, metrics = capture
-    telemetry.quota_wait('groq', 6)
-    telemetry.llm_usage('groq', 120, 50)
+    telemetry.quota_wait('gemini', 6)
+    telemetry.llm_usage('gemini', 120, 50)
     data = points(metrics)
     assert next(p.sum for n, p in data if n == 'licit_quota_wait') == 6
     assert sum(p.value for n, p in data if n == 'licit_llm_tokens') == 170

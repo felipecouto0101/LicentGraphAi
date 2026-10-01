@@ -79,13 +79,13 @@ class OrganizerTests(unittest.TestCase):
             organize_topic_map(self.topics, self.chunks, invoke)
 
     def test_truncation_splits_batches_and_keeps_verified_parts(self):
-        class GroqOutputTruncated(RuntimeError): pass
+        class GeminiOutputTruncated(RuntimeError): pass
         sizes = []
         def invoke(system, payload):
             if "passages" in payload:
                 sizes.append(len(payload["passages"]))
                 if len(payload["passages"]) > 4:
-                    raise GroqOutputTruncated()
+                    raise GeminiOutputTruncated()
             return self.reply(system, payload)
         result = organize_topic_map(self.topics, self.chunks, invoke)
         self.assertEqual(sizes, [8, 4, 4, 8, 4, 4])
@@ -162,12 +162,12 @@ class OrganizerTests(unittest.TestCase):
                     self.assertIn(evidence["quote"], self.chunks[evidence["chunk_id"]]["content"])
 
     def test_single_truncated_passage_splits_text_and_preserves_sources(self):
-        class GroqOutputTruncated(RuntimeError): pass
+        class GeminiOutputTruncated(RuntimeError): pass
         self.chunks = [{"content": "Conteúdo integral do edital. " * 20,
                         "metadata": {"page": 1, "chunk_id": 0}}]
         def invoke(system, payload):
             if "passages" in payload and sum(len(line["text"]) for line in payload["passages"][0]["lines"]) > 320:
-                raise GroqOutputTruncated()
+                raise GeminiOutputTruncated()
             return self.reply(system, payload)
         result = organize_topic_map(self.topics, self.chunks, invoke)
         self.assertEqual(all_chunk_ids(result), {0})

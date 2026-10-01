@@ -32,7 +32,7 @@ uma vulnerabilidade; não há uma baseline global que oculte problemas existente
 ## Ambiente
 
 Os testes usam `requirements-ci.txt`, com versões fixadas para Python 3.12. Não
-recebem chaves Gemini/Groq nem baixam modelos de embeddings. O teste de startup
+recebem chaves Gemini nem baixam modelos de embeddings. O teste de startup
 bloqueia imports de dependências pesadas e verifica os endpoints reais da API.
 
 `tests/test_node_2.py` contém testes de integração que carregam modelos reais do

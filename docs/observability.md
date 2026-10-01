@@ -88,7 +88,7 @@ ao mesmo tempo: elas usam as mesmas portas públicas.
   de execuções ativas e resultado real, incluindo interrupções e mapas parciais.
 - Mapa: leitura do PDF, índice estrutural e organização com IA.
 - LangGraph: leitura, embeddings/ChromaDB, análise e checklist.
-- Gemini e Groq: cada tentativa de chamada, duração, falhas, tokens de entrada e
+- Gemini: cada tentativa de chamada, duração, falhas, tokens de entrada e
   saída reportados pelo provedor e tempo gasto em pausas locais.
 
 Os spans `llm.request` medem a chamada ao provedor; `llm.wait` mede a espera.

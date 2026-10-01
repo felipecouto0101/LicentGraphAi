@@ -133,7 +133,7 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
         if mock_mode:
             logger.info("Nó 3: Modo de demonstração ativado explicitamente")
         else:
-            logger.info("Nó 3: Usando API Groq real com RAG")
+            logger.info("Nó 3: Usando API Gemini real com RAG")
 
         node3 = Node3RequirementAnalyzer(
             mock_mode=mock_mode,

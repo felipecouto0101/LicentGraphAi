@@ -16,7 +16,6 @@ import threading
 import time
 from typing import Optional
 import logging
-import json
 import os
 from dotenv import load_dotenv
 from app.rag.gemini_client import provider_name, validate_topic_configuration, GeminiTopicClient
@@ -80,26 +79,13 @@ def _run_organization_job(job_id: str):
         if is_mock_mode():
             raise ValueError("A organização exige NODE3_MOCK_MODE=false e uma chave válida do provedor selecionado.")
         provider = provider_name()
-        if provider == "gemini":
-            validate_topic_configuration()
-        else:
-            validate_analysis_configuration()
+        validate_topic_configuration()
         with session["lock"]:
             recovery = SourceRecovery(session.get("pages_text", []), session["chunks"], session.get("pages_tables", []))
             if session["llm"] is None:
-                if provider == "gemini":
-                    session["llm"] = GeminiTopicClient(progress=lambda **kw: _update_progress(job_id, **kw))
-                else:
-                    from app.rag.node_3_analyzer import Node3RequirementAnalyzer
-                    session["llm"] = Node3RequirementAnalyzer(mock_mode=False)
+                session["llm"] = GeminiTopicClient(progress=lambda **kw: _update_progress(job_id, **kw))
             def invoke(system, payload):
-                if provider == "gemini":
-                    return session["llm"].invoke(system, payload)
-                from langchain_core.messages import SystemMessage, HumanMessage
-                response = session["llm"]._invoke_with_rotation([
-                    SystemMessage(content=system),
-                    HumanMessage(content=json.dumps(payload, ensure_ascii=False))])
-                return session["llm"]._parse_llm_json(response.content)
+                return session["llm"].invoke(system, payload)
             def publish_partial(topic_map):
                 topic_map = recovery.enrich(topic_map)
                 with _jobs_lock:
@@ -109,8 +95,8 @@ def _run_organization_job(job_id: str):
                     session["structural_topics"], session["chunks"], invoke,
                     cache=session["organization_cache"],
                     progress=lambda **kw: _update_progress(job_id, **kw), on_partial=publish_partial,
-                    batch_max_chars=16000 if provider == "gemini" else 8000,
-                    batch_max_entries=12 if provider == "gemini" else 8)
+                    batch_max_chars=16000,
+                    batch_max_entries=12)
             if all_chunk_ids(organized) != all_chunk_ids(session["structural_topics"]):
                 raise ValueError("A organização perdeu referências do PDF.")
             organized = recovery.enrich(organized)

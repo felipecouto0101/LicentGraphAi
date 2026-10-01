@@ -28,7 +28,7 @@ class StartupTests(unittest.TestCase):
         code = '''
 import importlib.abc, sys
 blocked = {'langgraph', 'torch', 'transformers', 'sentence_transformers', 'chromadb',
-           'pdfplumber', 'langchain_groq', 'langchain_google_genai'}
+           'pdfplumber', 'langchain_google_genai'}
 class BlockHeavy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split('.')[0] in blocked or fullname == 'app.rag.langgraph_workflow':
@@ -60,11 +60,11 @@ print('Lightweight API startup passed')
 
     def test_config_preserves_explicit_demo_and_missing_key_validation(self):
         from app.analysis_config import is_mock_mode, validate_analysis_configuration
-        with patch.dict(os.environ, {'NODE3_MOCK_MODE': 'false', 'GROQ_API_KEY': ''}):
+        with patch.dict(os.environ, {'NODE3_MOCK_MODE': 'false', 'GEMINI_API_KEY': ''}):
             self.assertFalse(is_mock_mode())
-            with self.assertRaisesRegex(ValueError, 'GROQ_API_KEY'):
+            with self.assertRaisesRegex(ValueError, 'GEMINI_API_KEY'):
                 validate_analysis_configuration()
-        with patch.dict(os.environ, {'NODE3_MOCK_MODE': 'true', 'GROQ_API_KEY': ''}):
+        with patch.dict(os.environ, {'NODE3_MOCK_MODE': 'true', 'GEMINI_API_KEY': ''}):
             self.assertTrue(is_mock_mode())
             validate_analysis_configuration()
 

@@ -11,11 +11,11 @@ Pela interface, o usuário envia um PDF, acompanha o processamento, busca assunt
 | Interface | Streamlit | Upload, busca, navegação por temas e subtemas, fontes e progresso. |
 | API | FastAPI, Uvicorn e Pydantic | Endpoints, validação das requisições e jobs em background. |
 | Leitura de documentos | pdfplumber e LangChain | Extração de texto e tabelas, identificação de seções e divisão em chunks com referências de página. |
-| Organização com IA | LangChain, Gemini e Groq | Identificação de subtemas e agrupamento em temas com respostas estruturadas. |
+| Organização com IA | LangChain e Gemini | Identificação de subtemas e agrupamento em temas com respostas estruturadas. |
 | Recuperação de fontes | Python | Validação das referências, recuperação de contexto e apresentação de parágrafos, listas e tabelas. |
 | Análise completa pela API | LangGraph, Sentence Transformers e ChromaDB | Orquestração do pipeline, embeddings, recuperação de contexto com RAG e geração de checklist. |
 
-Gemini utiliza `ChatGoogleGenerativeAI`; Groq utiliza `ChatGroq`. O mapa de assuntos processa diretamente o texto dos chunks. Embeddings e ChromaDB fazem parte do pipeline de análise completa.
+Gemini utiliza `ChatGoogleGenerativeAI` do LangChain em todos os fluxos com IA. O mapa de assuntos processa diretamente o texto dos chunks. Embeddings e ChromaDB fazem parte do pipeline de análise completa.
 
 ## Fluxo da aplicação
 
@@ -29,7 +29,7 @@ O processamento valida as fontes, elimina sobreposições e recupera continuaç�
 
 Em caso de interrupção, o mapa apresenta os lotes validados e permite retomar a organização na mesma sessão. Quando não há subtemas validados, apresenta as seções originais do PDF e o motivo da interrupção.
 
-A análise completa, acessível por `/analyze/full`, utiliza quatro etapas no LangGraph: **leitura e chunking → embeddings e ChromaDB → análise com Groq e RAG → checklist**.
+A análise completa, acessível por `/analyze/full`, utiliza quatro etapas no LangGraph: **leitura e chunking → embeddings e ChromaDB → análise com Gemini e RAG → checklist**.
 
 ## Executar localmente
 
@@ -47,7 +47,6 @@ No Linux/macOS, ative com `source .venv/bin/activate`. No PowerShell, use `.\.ve
 Configure o provedor no `.env`:
 
 ```dotenv
-TOPIC_LLM_PROVIDER=gemini
 GEMINI_API_KEY=sua_chave
 GEMINI_MODEL=gemini-3.5-flash-lite
 NODE3_MOCK_MODE=false
@@ -75,12 +74,6 @@ Para executar separadamente, use um terminal por serviço:
 python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8002
 python -m streamlit run app/streamlit_app.py
 ```
-
-### Configuração Groq
-
-Use `TOPIC_LLM_PROVIDER=groq` e `GROQ_API_KEY`. Chaves adicionais usam `GROQ_API_KEY_2`, `GROQ_API_KEY_3` etc.
-
-Para contas de organizações diferentes, `GROQ_INDEPENDENT_ACCOUNTS=true` permite selecionar uma conta disponível antes de esperar. O padrão é `false`. O pipeline de análise completa requer Groq mesmo quando o mapa utiliza Gemini.
 
 Reinicie o backend após alterar o `.env`.
 
@@ -124,7 +117,6 @@ python -m unittest discover -s tests -p 'test_topic*.py' -v
 python -m unittest discover -s tests -p 'test_gemini*.py' -v
 python -m unittest discover -s tests -p 'test_source*.py' -v
 python -m unittest discover -s tests -p 'test_pdf_tables.py' -v
-python -m unittest discover -s tests -p 'test_groq_account_scheduler.py' -v
 python -m unittest discover -s tests -p 'test_ui_runtime.py' -v
 python -m unittest discover -s tests -p 'test_api_startup.py' -v
 ```

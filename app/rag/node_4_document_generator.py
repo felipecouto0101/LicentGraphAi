@@ -8,7 +8,6 @@ Responsável por:
 - Gerar checklist estruturado pronto para uso
 """
 
-from langchain_groq import ChatGroq
 from typing import Optional, List
 import os
 import logging
@@ -27,51 +26,40 @@ class Node4DocumentGenerator:
     - Extrair documentos necessários do edital
     - Categorizar documentos
     - Gerar checklist estruturado
-    - Usar Groq + OpenAI GPT-OSS-120b para análise inteligente
+    - Montar o checklist deterministicamente a partir dos requisitos validados
     """
     
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_name: str = "qwen/qwen3.8-27b",
+        model_name: str | None = None,
         temperature: float = 0.3,
         max_tokens: int = 2000,
         mock_mode: bool = False
     ):
         """
-        Inicializa o Nó 4 com configuração do Groq.
+        Inicializa o Nó 4 com configuração local.
         
         Args:
-            api_key: Chave da API Groq (opcional, usa env var se não fornecido)
+            api_key: Chave da API Gemini (opcional, usa env var se não fornecido)
             model_name: Nome do modelo LLM
             temperature: Temperatura para geração
             max_tokens: Máximo de tokens na resposta
             mock_mode: Se True, usa modo mock (sem API real)
         """
         if api_key is None:
-            api_key = os.getenv("GROQ_API_KEY")
+            api_key = os.getenv("GEMINI_API_KEY")
         
         self.api_key = api_key
-        self.model_name = model_name
+        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.mock_mode = mock_mode
         
-        if mock_mode:
-            logger.info("Nó 4 em modo mock (sem LLM real)")
-            self.llm = None
-        else:
-            if not api_key:
-                raise ValueError("API key não fornecida e mock_mode=False")
-            
-            logger.info(f"Nó 4 inicializado: modelo={model_name}, temperature={temperature}, mock_mode={mock_mode}")
-            self.llm = ChatGroq(
-                model_name=model_name,
-                api_key=api_key,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-    
+        # Checklist assembly does not call a model or require an API credential.
+        self.llm = None
+        logger.info("Nó 4 inicializado: montagem local do checklist, mock_mode=%s", mock_mode)
+
     def extract_documents(self, chunk: dict) -> dict:
         """
         Extrai documentos de um chunk do edital.

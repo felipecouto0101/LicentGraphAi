@@ -51,7 +51,6 @@ jobs:
       LANGCHAIN_TRACING_V2: 'false'
       GEMINI_API_KEY: ''
       GOOGLE_API_KEY: ''
-      GROQ_API_KEY: ''
       NODE3_MOCK_MODE: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

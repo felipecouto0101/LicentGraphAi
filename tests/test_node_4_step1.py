@@ -17,7 +17,7 @@ class TestNode4Config:
         node = Node4DocumentGenerator(api_key="test_key", mock_mode=True)
         
         assert node.api_key == "test_key"
-        assert node.model_name == "qwen/qwen3.8-27b"
+        assert node.model_name == "gemini-3.5-flash-lite"
         assert node.mock_mode is True
     
     def test_init_with_custom_model(self):
@@ -26,39 +26,27 @@ class TestNode4Config:
         
         node = Node4DocumentGenerator(
             api_key="test_key",
-            model_name="llama-3.3-70b-versatile",
+            model_name="gemini-2.5-flash",
             mock_mode=True
         )
         
-        assert node.model_name == "llama-3.3-70b-versatile"
+        assert node.model_name == "gemini-2.5-flash"
     
     def test_init_with_env_variable(self):
         """Testa inicialização usando variável de ambiente."""
         import os
         from app.rag.node_4_document_generator import Node4DocumentGenerator
         
-        os.environ["GROQ_API_KEY"] = "env_test_key"
+        os.environ["GEMINI_API_KEY"] = "env_test_key"
         node = Node4DocumentGenerator(mock_mode=True)
         
         assert node.api_key == "env_test_key"
     
-    def test_init_without_api_key_raises_error(self):
-        """Testa que erro é levantado sem API key em modo real."""
-        import os
+    def test_local_checklist_does_not_require_api_key(self, monkeypatch):
         from app.rag.node_4_document_generator import Node4DocumentGenerator
-        
-        # Remove temporariamente a env var
-        original_key = os.environ.get("GROQ_API_KEY")
-        if "GROQ_API_KEY" in os.environ:
-            del os.environ["GROQ_API_KEY"]
-        
-        try:
-            with pytest.raises(ValueError):
-                Node4DocumentGenerator(api_key=None, mock_mode=False)
-        finally:
-            # Restaura a env var
-            if original_key:
-                os.environ["GROQ_API_KEY"] = original_key
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        node = Node4DocumentGenerator(mock_mode=False)
+        assert node.llm is None
     
     def test_init_custom_temperature_config(self):
         """Testa configuração customizada de temperatura."""
