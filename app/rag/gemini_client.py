@@ -1,4 +1,4 @@
-"""Gemini REST client for the topic map, with shared local quota reservations."""
+"""Gemini LangChain client for the topic map, with shared local quota reservations."""
 import hashlib
 import json
 import logging
@@ -7,8 +7,6 @@ import re
 import threading
 import time
 from collections import deque
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 logger = logging.getLogger(__name__)
 _states = {}
@@ -41,7 +39,7 @@ def validate_topic_configuration():
 
 
 class GeminiTopicClient:
-    def __init__(self, progress=None, transport=None):
+    def __init__(self, progress=None, llm=None):
         self.key = os.getenv('GEMINI_API_KEY', '').strip()
         if not self.key:
             raise ValueError('Configure GEMINI_API_KEY no .env.')
@@ -53,7 +51,7 @@ class GeminiTopicClient:
         self.rpd = max(1, int(os.getenv('GEMINI_RPD_BUDGET', '500')))
         self.output = max(1, int(os.getenv('GEMINI_OUTPUT_TOKEN_BUDGET', '8192')))
         self.progress = progress or (lambda **kw: None)
-        self.transport = transport or self._post
+        self.llm = llm
         # Mesmo projeto com mais de uma chave deve compartilhar esse identificador.
         group = os.getenv('GEMINI_QUOTA_GROUP') or hashlib.sha256(self.key.encode()).hexdigest()
         self.state_key = (group, self.model)
@@ -104,74 +102,86 @@ class GeminiTopicClient:
                     local_requests_remaining=remaining, provider='gemini', model=self.model)
         return reservation
 
-    def _post(self, body):
-        request = Request(
-            f'https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent',
-            data=json.dumps(body, ensure_ascii=False).encode(),
-            headers={'Content-Type': 'application/json', 'x-goog-api-key': self.key}, method='POST')
-        with urlopen(request, timeout=120) as response:
-            return json.load(response)
+    def _invoke_model(self, system, text, schema):
+        from langchain_core.messages import SystemMessage, HumanMessage
+        if self.llm is None:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            options = dict(model=self.model, api_key=self.key, vertexai=False,
+                           temperature=0.2, max_tokens=self.output, timeout=120,
+                           max_retries=0)
+            if self.model == 'gemini-3.5-flash-lite':
+                options['thinking_level'] = 'minimal'
+            self.llm = ChatGoogleGenerativeAI(**options)
+        # Keep the raw AIMessage: inspect finish_reason and usage before parsing.
+        return self.llm.invoke([SystemMessage(content=system), HumanMessage(content=text)],
+                               response_mime_type='application/json', response_json_schema=schema)
+
+    @staticmethod
+    def _api_error(error):
+        """LangChain wraps SDK errors; preserve status, headers and quota details."""
+        from google.genai.errors import APIError
+        import httpx
+        seen = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, (APIError, httpx.TransportError, TimeoutError, ConnectionError)):
+                return error
+            error = error.__cause__ or error.__context__
+        return None
 
     @staticmethod
     def _retry_delay(error):
-        headers = getattr(error, 'headers', None) or {}
+        response = getattr(error, 'response', None)
+        headers = getattr(response, 'headers', None) or {}
         try:
             value = headers.get('Retry-After', headers.get('retry-after'))
             delay = float(value) if value is not None else None
         except (TypeError, ValueError):
             delay = None
-        body = {}
-        if isinstance(error, HTTPError):
-            try:
-                body = json.loads(error.read().decode())
-            except (ValueError, OSError):
-                pass
-        details = body.get('error', {}).get('details', [])
+        body = getattr(error, 'details', {})
+        body = body if isinstance(body, dict) else {}
+        details = body.get('error', body).get('details', [])
         for item in details:
             if isinstance(item, dict) and 'retryDelay' in item:
                 try:
                     delay = max(delay or 0, float(str(item['retryDelay']).rstrip('s')))
                 except ValueError:
                     pass
-        daily = any(('perday' in json.dumps(item).lower().replace('_', '')
-                     or 'per_day' in json.dumps(item).lower()) for item in details)
+        daily = any('perday' in json.dumps(item).lower().replace('_', '') for item in details)
         return max(1, (delay if delay is not None else 86400 if daily else 60) + 1), daily
 
     @staticmethod
     def _schema(payload):
-        string = {'type': 'STRING'}
+        string = {'type': 'string'}
         if 'passages' in payload:
-            source = {'type': 'OBJECT', 'properties': {
-                'id': string, 'lines': {'type': 'ARRAY', 'items': {'type': 'INTEGER'}}},
+            source = {'type': 'object', 'properties': {
+                'id': string, 'lines': {'type': 'array', 'items': {'type': 'integer'}}},
                 'required': ['id', 'lines']}
-            topic = {'type': 'OBJECT', 'properties': {'theme': string, 'title': string,
-                     'sources': {'type': 'ARRAY', 'items': source}},
+            topic = {'type': 'object', 'properties': {'theme': string, 'title': string,
+                     'sources': {'type': 'array', 'items': source}},
                      'required': ['theme', 'title', 'sources']}
-            return {'type': 'OBJECT', 'properties': {'topics': {'type': 'ARRAY', 'items': topic}},
+            return {'type': 'object', 'properties': {'topics': {'type': 'array', 'items': topic}},
                     'required': ['topics']}
-        child = {'type': 'OBJECT', 'properties': {'title': string,
-                 'source_ids': {'type': 'ARRAY', 'items': string}}, 'required': ['title', 'source_ids']}
-        theme = {'type': 'OBJECT', 'properties': {'title': string,
-                 'subtopics': {'type': 'ARRAY', 'items': child}}, 'required': ['title', 'subtopics']}
-        return {'type': 'OBJECT', 'properties': {'themes': {'type': 'ARRAY', 'items': theme}},
+        child = {'type': 'object', 'properties': {'title': string,
+                 'source_ids': {'type': 'array', 'items': string}}, 'required': ['title', 'source_ids']}
+        theme = {'type': 'object', 'properties': {'title': string,
+                 'subtopics': {'type': 'array', 'items': child}}, 'required': ['title', 'subtopics']}
+        return {'type': 'object', 'properties': {'themes': {'type': 'array', 'items': theme}},
                 'required': ['themes']}
 
     def invoke(self, system, payload):
         text = json.dumps(payload, ensure_ascii=False)
         # Estimativa conservadora em bytes; o consumo real vem em usageMetadata.
         estimated = len((system + text).encode('utf-8')) + 64
-        body = {'systemInstruction': {'parts': [{'text': system}]},
-                'contents': [{'role': 'user', 'parts': [{'text': text}]}],
-                'generationConfig': {'temperature': 0.2, 'maxOutputTokens': self.output,
-                                     'responseMimeType': 'application/json',
-                                     'responseSchema': self._schema(payload)}}
-        if self.model == 'gemini-3.5-flash-lite':
-            body['generationConfig']['thinkingConfig'] = {'thinkingLevel': 'minimal'}
+        schema = self._schema(payload)
         for attempt in range(4):
             reservation = self._reserve(estimated)
             try:
-                result = self.transport(body)
-            except (HTTPError, URLError, TimeoutError) as exc:
+                result = self._invoke_model(system, text, schema)
+            except Exception as error:
+                exc = self._api_error(error)
+                if exc is None:
+                    raise
                 status = getattr(exc, 'code', None)
                 if status in (401, 403):
                     raise RuntimeError('Gemini recusou a credencial ou permissão do projeto.') from None
@@ -190,28 +200,30 @@ class GeminiTopicClient:
                     self.state['cooldown'] = max(self.state['cooldown'], time.monotonic() + delay)
                 self._event('retrying', f'Gemini indisponível; nova tentativa {attempt + 1}/3.', retry=attempt + 1)
                 continue
-            usage = result.get('usageMetadata', {})
-            actual = usage.get('promptTokenCount')
+            usage = result.usage_metadata or {}
+            actual = usage.get('input_tokens')
             if isinstance(actual, int) and actual > 0:
                 with _lock:
                     reservation[1] = actual
             self._event('validating', 'Conferindo os assuntos e suas referências ao PDF.',
-                        input_tokens=actual, output_tokens=usage.get('candidatesTokenCount'))
-            candidates = result.get('candidates') or []
-            if not candidates:
-                raise RuntimeError('Gemini não retornou conteúdo para este lote.')
-            candidate = candidates[0]
-            if candidate.get('finishReason') == 'MAX_TOKENS':
+                        input_tokens=actual, output_tokens=usage.get('output_tokens'))
+            finish = str(result.response_metadata.get('finish_reason', 'STOP')).split('.')[-1]
+            if finish == 'MAX_TOKENS':
                 raise GeminiOutputTruncated('Resposta Gemini truncada; dividindo lote antes de publicar.')
-            if candidate.get('finishReason') not in (None, 'STOP'):
+            if finish != 'STOP':
                 raise RuntimeError('Gemini interrompeu a resposta; lote não publicado.')
-            content = ''.join(part.get('text', '') for part in candidate.get('content', {}).get('parts', [])
-                              if not part.get('thought'))
+            content = result.content
+            if isinstance(content, list):
+                content = ''.join(part.get('text', '') for part in content
+                                  if isinstance(part, dict) and part.get('type') == 'text'
+                                  and not part.get('thought'))
+            if not content:
+                raise RuntimeError('Gemini não retornou conteúdo para este lote.')
             try:
                 parsed = json.loads(content)
             except ValueError:
                 raise ValueError('Gemini retornou JSON inválido; corrigir o formato.') from None
             if not isinstance(parsed, dict):
                 raise ValueError('Gemini deve retornar um objeto JSON.')
-            logger.info('Gemini: modelo=%s, entrada=%s, saída=%s', self.model, actual, usage.get('candidatesTokenCount'))
+            logger.info('Gemini: modelo=%s, entrada=%s, saída=%s', self.model, actual, usage.get('output_tokens'))
             return parsed
