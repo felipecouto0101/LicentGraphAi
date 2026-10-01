@@ -3,9 +3,8 @@
 import importlib.util
 import os
 import json
-import numpy  # Mantém o módulo carregado durante mocks de sys.modules.
+import numpy  # noqa: F401 - Mantém o módulo carregado durante mocks de sys.modules.
 import sys
-import threading
 import types
 import unittest
 from pathlib import Path

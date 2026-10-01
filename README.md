@@ -84,6 +84,9 @@ Para contas de organizações diferentes, `GROQ_INDEPENDENT_ACCOUNTS=true` permi
 
 Reinicie o backend após alterar o `.env`.
 
+As origens CORS permitidas são `http://localhost:8501` e `http://127.0.0.1:8501`.
+Use `API_CORS_ORIGINS`, com URLs separadas por vírgula, para configurar outras origens.
+
 ## Execução e acompanhamento
 
 A interface verifica a disponibilidade da API em background e reutiliza o resultado por 15 segundos. Fragmentos do Streamlit atualizam conexão e progresso; o conteúdo de temas e fontes é renderizado ao abrir seus respectivos painéis.
@@ -127,3 +130,16 @@ python -m unittest discover -s tests -p 'test_api_startup.py' -v
 ```
 
 A cobertura inclui organização de assuntos, referências, cache, resultados parciais, cotas, tentativas, fontes, tabelas, continuações entre páginas e inicialização dos serviços.
+
+## Integração contínua
+
+O GitHub Actions executa Ruff, testes em Python 3.12, SAST com Semgrep e Bandit,
+auditoria de dependências com pip-audit e detecção de segredos com Gitleaks.
+Os relatórios ficam disponíveis nos artefatos da execução. O check `CI gate`
+consolida o resultado das verificações.
+
+Consulte [a configuração e os critérios de aprovação](docs/ci.md).
+
+O ChromaDB usa o backend Rust local com embeddings explícitos. Alertas sem correção
+informada são avisos não bloqueantes; alertas com correção disponível reprovam
+a auditoria. O relatório bruto é preservado. Veja [os controles e limites dessa revisão](docs/chroma-security.md).

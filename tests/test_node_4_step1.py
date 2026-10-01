@@ -5,7 +5,6 @@ TDD Approach: Testes escritos antes da implementação
 """
 
 import pytest
-from typing import Dict, List
 
 
 class TestNode4Config:
@@ -18,7 +17,7 @@ class TestNode4Config:
         node = Node4DocumentGenerator(api_key="test_key", mock_mode=True)
         
         assert node.api_key == "test_key"
-        assert node.model_name == "openai/gpt-oss-120b"
+        assert node.model_name == "qwen/qwen3.8-27b"
         assert node.mock_mode is True
     
     def test_init_with_custom_model(self):

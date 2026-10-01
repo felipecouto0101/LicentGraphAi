@@ -1,7 +1,6 @@
 import unittest
 from types import SimpleNamespace
 from app.rag.pdf_tables import extract_page_tables, table_html, is_tabular, link_table_continuations
-from app.rag.pdf_reader import PDFReader
 from app.rag.source_recovery import SourceRecovery, _BOUNDARY
 
 

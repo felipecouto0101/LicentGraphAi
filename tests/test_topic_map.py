@@ -1,10 +1,6 @@
 """Regressões do mapa rápido e das respostas verificadas."""
 
-import importlib
-import threading
-import types
 import unittest
-from unittest.mock import patch
 
 from app.rag.topic_map import build_topic_map, all_chunk_ids, merge_similar_themes, split_topic_sections
 

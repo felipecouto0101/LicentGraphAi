@@ -42,11 +42,17 @@ with TestClient(app) as client:
     for route in ['/', '/status']:
         assert client.get(route).status_code == 200
     assert client.get('/status').json()['ready'] is True
+    allowed = client.options('/analyze/upload', headers={
+        'Origin': 'http://localhost:8501', 'Access-Control-Request-Method': 'POST'})
+    assert allowed.headers.get('access-control-allow-origin') == 'http://localhost:8501'
+    rejected = client.options('/analyze/upload', headers={
+        'Origin': 'https://untrusted.example', 'Access-Control-Request-Method': 'POST'})
+    assert 'access-control-allow-origin' not in rejected.headers
 assert not any(n.split('.')[0] in blocked for n in sys.modules)
 print('Lightweight API startup passed')
 '''
         env = {**os.environ, 'TOPIC_LLM_PROVIDER': 'gemini', 'GEMINI_API_KEY': 'fake',
-               'NODE3_MOCK_MODE': 'false'}
+               'NODE3_MOCK_MODE': 'false', 'API_CORS_ORIGINS': 'http://localhost:8501'}
         result = subprocess.run([sys.executable, '-c', code], cwd=Path(__file__).parents[1],
                                 env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)

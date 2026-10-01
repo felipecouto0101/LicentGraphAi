@@ -7,13 +7,12 @@ langgraph>=0.0.20
 
 # PDF Processing
 pdfplumber>=0.10.0
-PyPDF2>=3.0.0
 
 # Embeddings
 sentence-transformers>=2.2.0
 
 # Vector Database
-chromadb>=0.4.0
+chromadb==1.5.9  # Reviewed local Rust backend; see docs/chroma-security.md
 
 # API & Backend
 fastapi>=0.104.0

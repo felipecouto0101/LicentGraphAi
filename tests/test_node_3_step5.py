@@ -5,7 +5,6 @@ TDD Approach: Testes escritos antes da implementação
 """
 
 import pytest
-from typing import Dict, List
 
 
 class TestTransientGroqFailures:
