@@ -5,9 +5,11 @@ TDD Approach: Testes escritos antes da implementação
 """
 
 import pytest
-from typing import List, Dict
 import tempfile
 import shutil
+
+# These tests load real Hugging Face models and a persistent Chroma database.
+pytestmark = pytest.mark.integration
 
 
 class TestNode2EmbeddingGenerator:
@@ -247,16 +249,7 @@ class TestNode2Integration:
     
     def test_integration_with_node_1(self):
         """Testa integração completa Nó 1 → Nó 2."""
-        from app.rag.node_1_reader_chunker import Node1ReaderChunker
         from app.rag.node_2_embeddings import Node2EmbeddingGenerator
-        
-        # Nó 1: Processa texto (simulado)
-        node1 = Node1ReaderChunker()
-        sample_text = """
-        OBJETO: Aquisição de computadores
-        PRAZO: 30 dias
-        ESPECIFICAÇÕES: Processador i5
-        """
         
         # Simula output do Nó 1
         node1_result = {

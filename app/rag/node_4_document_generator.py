@@ -207,7 +207,7 @@ class Node4DocumentGenerator:
         categories = {
             "trabalhista": r"\b(fgts|cndt|trabalhist\w*|previdenciari\w*|dctfweb|esocial|gfip)\b",
             "economica": r"\b(balanc\w*|falencia|liquidez|solvencia|patrimonio|dre|demonstrac\w* contabeis)\b",
-            "tecnica": r"\b(crea|cau|art|rrt|atestado|certificac\w* tecnica|vistoria|acervo tecnico)\b",
+            "tecnica": r"\b(crea|cau|art|rrt|atestado|certificac\w* tecnica|iso\s*\d+|vistoria|acervo tecnico)\b",
             "fiscal": r"\b(fiscal|tributari\w*|fazenda|imposto|contribuintes)\b",
             "juridica": r"\b(contrato social|estatuto|ato constitutivo|procuracao|junta comercial)\b",
             "proposta": r"\b(proposta|planilha|bdi|orcamento|cronograma|composic\w* de custo)\b",

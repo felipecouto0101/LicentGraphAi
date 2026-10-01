@@ -5,7 +5,6 @@ TDD Approach: Testes escritos antes da implementação
 """
 
 import pytest
-from typing import Dict, List
 
 
 class TestNode4IntegrationWithNode3:
@@ -18,8 +17,8 @@ class TestNode4IntegrationWithNode3:
         node4 = Node4DocumentGenerator(api_key="test_key", mock_mode=True)
         
         node3_output = {
-            "structured_info": {
-                "documentation": ["CNPJ", "RG", "Certidão Fiscal"]
+            "structured_analysis": {
+                "chunk-1": {"documentation": ["CNPJ", "RG", "Certidão Fiscal"]}
             }
         }
         

@@ -10,7 +10,7 @@ execução começa.
 | Check | Escopo | Condição de falha |
 | --- | --- | --- |
 | Ruff | `app/`, `tests/` e `start_app.py` | Diagnósticos de sintaxe e Pyflakes (`E9`, `F`), incluindo nomes indefinidos e imports não utilizados. |
-| Tests (Python 3.12) | Suíte em `tests/`, incluindo API, fontes, clientes simulados e interface | Qualquer teste falha ou conflito nas dependências de teste. |
+| Tests (Python 3.12) | Testes sem a marca `integration`, incluindo API, fontes, clientes simulados e interface | Qualquer teste selecionado falha ou conflito nas dependências de teste. |
 | Bandit | Código da aplicação e inicializador | Achados de severidade média/alta e confiança média/alta. |
 | Semgrep | Regras Community Edition `p/python` e `p/security-audit` | Achados classificados como `ERROR` ou erros de análise no modo estrito. |
 | Dependency audit | Ambiente instalado a partir de `requirements.txt`, incluindo dependências transitivas | Vulnerabilidades conhecidas encontradas pelo pip-audit, falha na consulta ou conflito de dependências. |
@@ -33,6 +33,11 @@ Os testes usam `requirements-ci.txt`, com versões fixadas para Python 3.12. Nã
 recebem chaves Gemini/Groq nem baixam modelos de embeddings. O teste de startup
 bloqueia imports de dependências pesadas e verifica os endpoints reais da API.
 
+`tests/test_node_2.py` contém testes de integração que carregam modelos reais do
+Hugging Face e ChromaDB. Eles estão marcados como `integration` e não fazem parte
+do job offline. Para executá-los em um ambiente com as dependências completas e
+acesso aos modelos, use `python -m pytest tests -m integration`.
+
 A auditoria de dependências usa o manifesto completo `requirements.txt`, em um
 job separado. PyTorch é instalado pela distribuição CPU para evitar pacotes CUDA.
 O relatório corresponde às versões resolvidas nessa execução; ele não representa
@@ -49,7 +54,7 @@ vulnerabilidades. Os checks possuem limites de duração e cache de pacotes.
 python -m pip install -r requirements-ci.txt
 python -m pip install ruff==0.16.9 bandit==1.9.4
 ruff check app tests start_app.py
-python -m pytest tests
+python -m pytest tests -m "not integration"
 bandit -r app start_app.py --severity-level medium --confidence-level medium
 ```
 
@@ -70,3 +75,16 @@ conforme o plano do GitHub. O arquivo de workflow, sozinho, não impede o merge.
 
 Os checks analisam código e dependências; não comprovam a ausência de todas as
 vulnerabilidades nem avaliam a qualidade semântica das respostas da IA.
+
+## Achados da auditoria completa
+
+A primeira auditoria identificou avisos de segurança no ChromaDB para os quais a
+base consultada não informou versões corrigidas: `PYSEC-2026-311`,
+`PYSEC-2026-3813`, `PYSEC-2026-3814` e `PYSEC-2026-3815`. Esses avisos permanecem
+visíveis e bloqueiam o check de dependências enquanto forem reportados. Eles
+descrevem problemas em APIs de servidor; o projeto usa `PersistentClient` local,
+mas a auditoria de componentes não determina a explorabilidade de cada caminho.
+
+O PyPDF2, que não é usado pelo leitor da aplicação, foi removido do manifesto.
+O job atualiza pip e setuptools antes da resolução para evitar auditar versões
+antigas das ferramentas pré-instaladas no runner.

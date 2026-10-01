@@ -10,4 +10,4 @@ select = ["E9", "F"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-
+markers = ["integration: loads real embedding models and ChromaDB"]
