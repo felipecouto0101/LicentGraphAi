@@ -15,6 +15,8 @@ execução começa.
 | Semgrep | Regras Community Edition `p/python` e `p/security-audit` | Achados classificados como `ERROR` ou erros de análise no modo estrito. |
 | Dependency audit | Ambiente instalado a partir de `requirements.txt`, incluindo dependências transitivas | Vulnerabilidades com versão corrigida disponível, falha na consulta, conflitos ou auditoria incompleta. Sem correção informada: aviso não bloqueante. |
 | Gitleaks | Histórico Git completo disponível no checkout | Segredos identificados ou erro na execução do scanner. |
+| Observability stack | Compose, Alloy, Prometheus, Loki, Tempo e Grafana | Configuração inválida, dashboard ausente ou falha na entrega real de métricas, logs ou traces. |
+| Observability native | Binários oficiais no Windows e Linux x64 | Falha de integridade, inicialização, dashboard ou entrega real dos três sinais. |
 | CI gate | Resultado de todos os jobs | Qualquer check falha, é cancelado ou fica incompleto. |
 
 Os relatórios JSON, SARIF e JUnit ficam nos **Artifacts** da execução por sete
@@ -30,7 +32,7 @@ uma vulnerabilidade; não há uma baseline global que oculte problemas existente
 ## Ambiente
 
 Os testes usam `requirements-ci.txt`, com versões fixadas para Python 3.12. Não
-recebem chaves Gemini/Groq nem baixam modelos de embeddings. O teste de startup
+recebem chaves Gemini nem baixam modelos de embeddings. O teste de startup
 bloqueia imports de dependências pesadas e verifica os endpoints reais da API.
 
 `tests/test_node_2.py` contém testes de integração que carregam modelos reais do

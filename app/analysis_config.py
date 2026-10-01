@@ -9,9 +9,9 @@ def is_mock_mode() -> bool:
 def validate_analysis_configuration() -> None:
     if is_mock_mode():
         return
-    key = os.getenv("GROQ_API_KEY", "").strip()
-    if not key or key == "your_groq_api_key_here":
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key or key == "your_gemini_api_key_here":
         raise ValueError(
-            "GROQ_API_KEY não configurada. Defina uma chave válida para análise real "
+            "GEMINI_API_KEY não configurada. Defina uma chave válida para análise real "
             "ou ative NODE3_MOCK_MODE=true para demonstração."
         )

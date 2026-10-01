@@ -67,3 +67,6 @@ htmlcov/
 *.tmp
 *.temp
 temp/
+
+# Native observability binaries, downloads and persistent telemetry
+data/observability/

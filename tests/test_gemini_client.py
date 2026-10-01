@@ -197,5 +197,50 @@ class GeminiTests(unittest.TestCase):
         with patch.dict(os.environ, {'GEMINI_API_KEY': ''}):
             with self.assertRaisesRegex(ValueError, 'GEMINI_API_KEY'): module.validate_topic_configuration()
 
+    def test_missing_key_never_selects_another_provider(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': '', 'TOPIC_LLM_PROVIDER': ''}):
+            self.assertEqual(module.provider_name(), 'gemini')
+            with self.assertRaisesRegex(ValueError, 'GEMINI_API_KEY'):
+                module.validate_topic_configuration()
+
+    def test_unsupported_provider_fails_with_migration_instruction(self):
+        with patch.dict(os.environ, {'TOPIC_LLM_PROVIDER': 'unsupported'}):
+            with self.assertRaisesRegex(ValueError, 'Somente Gemini'):
+                module.validate_topic_configuration()
+
+    def test_full_analysis_shares_quota_with_topic_map_and_preserves_messages(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+        calls = []
+        node = Node3RequirementAnalyzer(mock_mode=False)
+        node.llm.llm = FakeLLM(lambda body: calls.append(body) or response('Resposta explicativa.'))
+        topics = self.client()
+        topics.invoke('system', {'passages': []})
+        messages = [SystemMessage(content='Explain'), HumanMessage(content='Source')]
+        result = node._invoke_llm(messages)
+        self.assertEqual(result.content, 'Resposta explicativa.')
+        self.assertEqual(calls[0]['messages'], messages)
+        self.assertNotIn('response_json_schema', calls[0])
+        self.assertIs(node.llm.state, topics.state)
+        self.assertAlmostEqual(sum(self.waits), 6.1)
+
+    def test_full_analysis_uses_real_langchain_adapter_with_explicit_model_and_key(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+        with patch('langchain_google_genai.ChatGoogleGenerativeAI') as factory:
+            factory.return_value.invoke.return_value = response('{"documentos":[]}')
+            node = Node3RequirementAnalyzer(api_key='explicit-key', model_name='gemini-2.5-flash', max_tokens=1500)
+            result = node._invoke_llm([HumanMessage(content='Source')])
+        self.assertEqual(result.content, '{"documentos":[]}')
+        self.assertEqual(factory.call_args.kwargs['api_key'], 'explicit-key')
+        self.assertEqual(factory.call_args.kwargs['model'], 'gemini-2.5-flash')
+        self.assertEqual(factory.call_args.kwargs['max_tokens'], 1500)
+        self.assertEqual(factory.call_args.kwargs['max_retries'], 0)
+
+    def test_truncation_blocks_full_analysis_before_returning_partial_content(self):
+        from app.rag.node_3_analyzer import Node3RequirementAnalyzer
+        node = Node3RequirementAnalyzer(mock_mode=False)
+        node.llm.llm = FakeLLM(lambda body: response('{', 'MAX_TOKENS'))
+        with self.assertRaises(module.GeminiOutputTruncated):
+            node._invoke_llm([HumanMessage(content='Source')])
+
 
 if __name__ == '__main__': unittest.main()

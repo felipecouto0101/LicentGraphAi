@@ -228,7 +228,7 @@ def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None, on_
                 result = _validate_extraction(invoke(prompt + " Corrija o erro de validação informado; "
                     "use exclusivamente IDs e números de linhas existentes.", corrected), batch)
         except Exception as exc:
-            oversized = type(exc).__name__ in {"GroqRequestTooLarge", "GroqOutputTruncated", "GeminiRequestTooLarge", "GeminiOutputTruncated"}
+            oversized = type(exc).__name__ in {"GeminiRequestTooLarge", "GeminiOutputTruncated"}
             if not oversized and not isinstance(exc, ValueError):
                 raise
             if len(batch) > 1:
@@ -282,7 +282,7 @@ def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None, on_
         try:
             rows = _validate_grouping(invoke(group_prompt, payload), batch)
         except Exception as exc:
-            if type(exc).__name__ not in {"GroqRequestTooLarge", "GroqOutputTruncated", "GeminiRequestTooLarge", "GeminiOutputTruncated"} or len(batch) == 1:
+            if type(exc).__name__ not in {"GeminiRequestTooLarge", "GeminiOutputTruncated"} or len(batch) == 1:
                 raise
             middle = len(batch) // 2
             rows = group(batch[:middle]) + group(batch[middle:])
@@ -313,7 +313,7 @@ def organize_topic_map(topic_map, chunks, invoke, cache=None, progress=None, on_
                     "Não invente categorias. Cubra cada ID exatamente uma vez. "
                     'Retorne {"themes":[{"title":"tema", "subtopics":[{"title":"grupo", "source_ids":["id"]}]}]}.', payload), batch)
             except Exception as exc:
-                if type(exc).__name__ not in {"GroqRequestTooLarge", "GroqOutputTruncated", "GeminiRequestTooLarge", "GeminiOutputTruncated"} or len(batch) == 1:
+                if type(exc).__name__ not in {"GeminiRequestTooLarge", "GeminiOutputTruncated"} or len(batch) == 1:
                     raise
                 middle = len(batch) // 2
                 result = consolidate(batch[:middle]) + consolidate(batch[middle:])
@@ -384,3 +384,4 @@ def inspect_annex_references(chunks):
                         headings.add(key)
     return [{**item, "pages": sorted(item["pages"]), "status": "located" if key in headings else "not_located"}
             for key, item in references.items()]
+

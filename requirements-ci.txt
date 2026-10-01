@@ -3,7 +3,6 @@ fastapi==0.142.2
 httpx==0.28.1
 langchain-core==1.6.6
 langchain-google-genai==4.4.0
-langchain-groq==1.1.3
 langchain-text-splitters==1.1.2
 langgraph==1.2.12
 numpy==2.5.3
@@ -14,3 +13,8 @@ python-multipart==0.0.32
 requests==2.34.2
 streamlit==1.64.0
 chromadb==1.5.9
+
+
+# OpenTelemetry OTLP over HTTP (optional at runtime)
+opentelemetry-sdk==1.45.0
+opentelemetry-exporter-otlp-proto-http==1.45.0

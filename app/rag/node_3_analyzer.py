@@ -1,16 +1,14 @@
 import logging
 import os
 import re
-import time
 import unicodedata
 import hashlib
 import json
 import tempfile
-from collections import deque
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage, SystemMessage
+from app.rag.gemini_client import GeminiTopicClient, GeminiRequestTooLarge
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,21 +17,13 @@ logger = logging.getLogger(__name__)
 _progress_callback = None
 
 
-class GroqRequestTooLarge(RuntimeError):
-    """O pedido precisa ser reduzido; esperar não altera seu tamanho."""
-
-
-class GroqOutputTruncated(GroqRequestTooLarge):
-    """Resposta interrompida pelo orçamento de saída; não é extração completa."""
-
-
 class Node3RequirementAnalyzer:
     """
-    Nó 3: Análise de Requisitos com IA (Groq + Llama 3.1)
+    Nó 3: Análise de Requisitos com IA (Gemini via LangChain)
 
     Responsável por:
-    - Configurar conexão com Groq API
-    - Inicializar modelo Llama 3.1
+    - Compartilhar controle de cotas e tentativas com o mapa
+    - Inicializar o modelo Gemini configurado
     - Analisar requisitos de editais
     """
 
@@ -48,28 +38,11 @@ class Node3RequirementAnalyzer:
     )
 
     def __init__(
-        self,
-        api_key: str | None = None,
-        model_name: str = "qwen/qwen3.8-27b",
-        temperature: float = 0.3,
-        max_tokens: int = 2500,
-        mock_mode: bool = False,
-        persist_directory: str = "./data/vector_db",
-        collection_name: str = "licitacoes",
+        self, api_key: str | None = None, model_name: str | None = None,
+        temperature: float = 0.3, max_tokens: int = 2500, mock_mode: bool = False,
+        persist_directory: str = "./data/vector_db", collection_name: str = "licitacoes",
     ):
-        """
-        Inicializa o Nó 3.
-
-        Args:
-            api_key: Chave da API Groq (ou usa variável de ambiente)
-            model_name: Nome do modelo LLM
-            temperature: Temperatura para geração
-            max_tokens: Máximo de tokens na resposta
-            mock_mode: Se True, não inicializa LLM real (para testes)
-            persist_directory: Diretório do ChromaDB (para busca RAG)
-            collection_name: Nome da coleção ChromaDB
-        """
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.mock_mode = mock_mode
         self.persist_directory = persist_directory
         self.collection_name = collection_name
@@ -77,458 +50,28 @@ class Node3RequirementAnalyzer:
             Path(os.getenv("LICIT_CHECKPOINT_DIR", "./data/checkpoints"))
             if not mock_mode else None
         )
-
         if not self.api_key and not mock_mode:
-            raise ValueError(
-                "API key é obrigatória. Forneça api_key ou configure GROQ_API_KEY"
-            )
-
-        self.model_name = model_name
+            raise ValueError("API key é obrigatória. Configure GEMINI_API_KEY")
+        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self._output_token_cap = max(1, int(os.getenv("GROQ_OUTPUT_TOKEN_BUDGET", "950")))
+        self._output_token_cap = max(1, int(os.getenv("GEMINI_OUTPUT_TOKEN_BUDGET", "8192")))
+        self.llm = None if mock_mode else GeminiTopicClient(
+            api_key=self.api_key, model=self.model_name, max_tokens=self._output_budget(),
+            temperature=temperature, progress=self._publish_progress)
+        logger.info("Nó 3 inicializado: modelo=%s, mock_mode=%s", self.model_name, mock_mode)
 
-        if self._output_budget() <= 1000:
-            self._rpm_budget_override = 1
-
-        if not mock_mode:
-            self._api_keys = self._load_api_keys()
-            self._current_key_idx = 0
-            self.llm = self._make_llm(self._api_keys[0])
-            logger.info(f"Nó 3: {len(self._api_keys)} chave(s) API carregada(s)")
-        else:
-            self._api_keys = []
-            self.llm = None
-            logger.info("Nó 3 em modo mock (sem LLM real)")
-
-        logger.info(
-            f"Nó 3 inicializado: modelo={model_name}, temperature={temperature}, mock_mode={mock_mode}"
-        )
-
-    def _load_api_keys(self) -> list[str]:
-        """Carrega todas as chaves API disponíveis do ambiente."""
-        keys = []
-        # GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, ...
-        for suffix in ["", "_2", "_3", "_4", "_5"]:
-            k = os.getenv(f"GROQ_API_KEY{suffix}", "").strip()
-            if k and k != "your_groq_api_key_here" and k not in keys:
-                keys.append(k)
-        if not keys and self.api_key:
-            keys.append(self.api_key)
-        return keys
+    @staticmethod
+    def _publish_progress(**kwargs):
+        if _progress_callback is not None:
+            _progress_callback(**kwargs)
 
     def _output_budget(self) -> int:
         return min(getattr(self, "max_tokens", 2500),
-                   getattr(self, "_output_token_cap", 2500))
+                   getattr(self, "_output_token_cap", 8192))
 
-    def _make_llm(self, api_key: str) -> ChatGroq:
-        """Cria uma instância do LLM com a chave fornecida."""
-        return ChatGroq(
-            model_name=self.model_name,
-            api_key=api_key,
-            temperature=self.temperature,
-            max_tokens=self._output_budget(),
-            max_retries=0,  # O nó controla esperas e tentativas usando os cabeçalhos.
-        )
-
-    def _rotate_key(self) -> bool:
-        """
-        Tenta rotacionar para a próxima chave API disponível.
-        Retorna True se conseguiu, False se não há mais chaves.
-        """
-        next_idx = self._current_key_idx + 1
-        if next_idx >= len(self._api_keys):
-            logger.error("Todas as chaves API esgotaram o limite. Sem mais chaves disponíveis.")
-            return False
-        self._current_key_idx = next_idx
-        self.llm = self._make_llm(self._api_keys[next_idx])
-        logger.warning(f"Rotacionando para chave {next_idx + 1}/{len(self._api_keys)}")
-        return True
-
-    def _independent_accounts(self) -> bool:
-        # Ative apenas para chaves de organizações diferentes: a Groq compartilha
-        # os limites entre todas as chaves de uma mesma organização.
-        return (os.getenv("GROQ_INDEPENDENT_ACCOUNTS", "false").lower() == "true"
-                and len(getattr(self, "_api_keys", [])) > 1)
-
-    def _save_account(self):
-        states = getattr(self, "_account_states", None)
-        if states is None:
-            states = self._account_states = {}
-        state = states.setdefault(self._current_key_idx, {})
-        state.update(quota=getattr(self, "_quota", {}),
-                     calls=getattr(self, "_request_times", deque()),
-                     output_cap=getattr(self, "_output_token_cap", 950),
-                     rpm=getattr(self, "_rpm_budget_override", 10))
-        return state
-
-    def _activate_account(self, index):
-        if index == self._current_key_idx:
-            return
-        self._save_account()
-        state = self._account_states.setdefault(index, {
-            "quota": {}, "calls": deque(),
-            "output_cap": max(1, int(os.getenv("GROQ_OUTPUT_TOKEN_BUDGET", "950"))),
-            "rpm": 1 if self._output_budget() <= 1000 else 10,
-        })
-        self._current_key_idx = index
-        self._quota, self._request_times = state["quota"], state["calls"]
-        self._output_token_cap, self._rpm_budget_override = state["output_cap"], state["rpm"]
-        self.llm = self._make_llm(self._api_keys[index])
-        logger.info("Groq: usando conta %s/%s", index + 1, len(self._api_keys))
-
-    def _select_available_account(self, messages):
-        """Usa outra organização antes de esperar; preserva a atual se disponível."""
-        self._save_account()
-        while True:
-            now = time.monotonic()
-            candidates = []
-            oversized = 0
-            for offset in range(len(self._api_keys)):
-                index = (self._current_key_idx + offset) % len(self._api_keys)
-                state = self._account_states.setdefault(index, {
-                    "quota": {}, "calls": deque(),
-                    "output_cap": max(1, int(os.getenv("GROQ_OUTPUT_TOKEN_BUDGET", "950"))),
-                    "rpm": 1 if self._output_budget() <= 1000 else 10,
-                })
-                quota, calls = state["quota"], state["calls"]
-                for kind in ("tokens", "requests"):
-                    if quota.get(kind + "_reset_at", float("inf")) <= now:
-                        quota.pop(kind + "_remaining", None)
-                        quota.pop(kind + "_reset_at", None)
-                estimated = sum((len(str(getattr(m, "content", m))) + 2) // 3 + 8
-                                for m in messages) + min(self.max_tokens, state["output_cap"])
-                if quota.get("tokens_limit") and estimated > quota["tokens_limit"]:
-                    oversized += 1
-                    continue
-                ready = state.get("cooldown_until", 0)
-                if quota.get("requests_remaining") == 0:
-                    ready = max(ready, quota.get("requests_reset_at", float("inf")))
-                if quota.get("tokens_remaining", estimated) < estimated:
-                    ready = max(ready, quota.setdefault("tokens_reset_at", now + 60) + 1)
-                while calls and now - calls[0] >= 60:
-                    calls.popleft()
-                rpm = min(max(1, int(os.getenv("GROQ_RPM_BUDGET", "10"))), state["rpm"])
-                if len(calls) >= rpm:
-                    ready = max(ready, calls[0] + 61)
-                if ready <= now:
-                    self._activate_account(index)
-                    return
-                candidates.append(ready)
-            if oversized == len(self._api_keys):
-                raise GroqRequestTooLarge("Pedido excede a cota de tokens das contas disponíveis.")
-            wait = min(candidates, default=float("inf")) - now
-            if wait > 300:
-                raise RuntimeError("Groq: nenhuma conta disponível neste momento; "
-                                   "retome depois. O checkpoint continua salvo.")
-            logger.info("Groq: todas as contas em espera; próxima janela em %.0fs", wait)
-            time.sleep(min(60, max(1, wait)))
-
-    @staticmethod
-    def _rate_limit_wait(error: Exception) -> float:
-        """Usa o prazo comunicado pela Groq antes de recorrer a uma espera padrão."""
-        response = getattr(error, "response", None)
-        headers = getattr(response, "headers", None) or {}
-        retry_after = headers.get("retry-after") or headers.get("Retry-After")
-        if retry_after is not None:
-            try:
-                return max(1.0, float(retry_after) + 1.0)
-            except (TypeError, ValueError):
-                pass
-
-        match = re.search(
-            r"try again in\s+(?:(\d+)m)?([\d.]+)s",
-            str(error), re.IGNORECASE,
-        )
-        if match:
-            try:
-                return max(1.0, int(match.group(1) or 0) * 60 + float(match.group(2)) + 1)
-            except ValueError:
-                pass
-        return 60.0
-
-    @staticmethod
-    def _groq_error_detail(error: Exception) -> str:
-        """Mostra a explicação da API, sem imprimir chave ou corpo do pedido."""
-        body = getattr(error, "body", None)
-        details = body.get("error", body) if isinstance(body, dict) else {}
-        detail = details.get("message") if isinstance(details, dict) else None
-        if not isinstance(detail, str) or not detail.strip():
-            return "A exceção não forneceu o campo message da Groq."
-        detail = re.sub(r"\bgsk_[A-Za-z0-9_-]+", "[chave ocultada]", detail)
-        detail = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [ocultado]", detail)
-        return " ".join(detail.split())[:1500]
-
-    @staticmethod
-    def _reset_seconds(value: str | None) -> float | None:
-        if not value:
-            return None
-        match = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", value.strip())
-        if match:
-            return (int(match.group(1) or 0) * 3600
-                    + int(match.group(2) or 0) * 60 + float(match.group(3)))
-        return None
-
-    def _record_quota(self, headers) -> None:
-        """Guarda cotas reais retornadas pela API, sem registrar credenciais."""
-        if not headers:
-            return
-        quota = getattr(self, "_quota", None)
-        if quota is None:
-            quota = self._quota = {}
-        now = time.monotonic()
-        for kind in ("tokens", "requests"):
-            remaining = headers.get(f"x-ratelimit-remaining-{kind}")
-            limit = headers.get(f"x-ratelimit-limit-{kind}")
-            reset = self._reset_seconds(headers.get(f"x-ratelimit-reset-{kind}"))
-            for name, value in (("remaining", remaining), ("limit", limit)):
-                try:
-                    if value is not None:
-                        quota[f"{kind}_{name}"] = max(0, int(value))
-                except (TypeError, ValueError):
-                    pass
-            if reset is not None:
-                quota[f"{kind}_reset_at"] = now + reset
-        if "tokens_remaining" in quota or "requests_remaining" in quota:
-            # Numeric quota counters and account index only; no API credentials.
-            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-            logger.info("Cota Groq (chave %s): tokens/min restantes=%s; requisições/dia restantes=%s",
-                        getattr(self, "_current_key_idx", 0) + 1,
-                        quota.get("tokens_remaining", "?"),
-                        quota.get("requests_remaining", "?"))
-
-    def _before_groq_request(self, messages: list, enforce_rpm: bool = True) -> None:
-        """Espera pela janela de tokens e limita as chamadas por minuto."""
-        quota = getattr(self, "_quota", None)
-        if quota is None:
-            quota = self._quota = {}
-        calls = getattr(self, "_request_times", None)
-        if calls is None:
-            calls = self._request_times = deque()
-
-        # O header de requests representa RPD, não RPM. Um teto local
-        # conservador cobre RPM até o primeiro 429, sem supor a cota da conta.
-        rpm = max(1, int(os.getenv("GROQ_RPM_BUDGET", "10")))
-        rpm = min(rpm, getattr(self, "_rpm_budget_override", rpm))
-        now = time.monotonic()
-        while calls and now - calls[0] >= 60:
-            calls.popleft()
-        while enforce_rpm and len(calls) >= rpm:
-            wait = max(0.0, 61 - (now - calls[0]))
-            logger.info("Limite local de requisições: aguardando %.0fs", wait)
-            time.sleep(wait)
-            now = time.monotonic()
-            while calls and now - calls[0] >= 60:
-                calls.popleft()
-
-        if quota.get("requests_remaining") == 0:
-            reset_at = quota.get("requests_reset_at")
-            if reset_at and now >= reset_at:
-                quota.pop("requests_remaining", None)
-            else:
-                wait = max(0.0, reset_at - now) if reset_at else None
-                raise RuntimeError(
-                    "Groq: cota de requisições por dia esgotada"
-                    + (f"; tente novamente em {wait:.0f}s" if wait else "")
-                    + ". O checkpoint continua salvo."
-                )
-
-        # Estimativa conservadora: não é a tokenização exata do modelo.
-        # Reserva também espaço para a resposta configurada.
-        estimated = sum((len(str(getattr(m, "content", m))) + 2) // 3 + 8
-                        for m in messages)
-        estimated += self._output_budget()
-        limit = quota.get("tokens_limit")
-        if limit and estimated > limit:
-            raise GroqRequestTooLarge(
-                f"A chamada pode exigir cerca de {estimated} tokens, acima da cota "
-                f"de {limit} tokens/min informada pela Groq. Reduza o lote ou use "
-                "um limite maior; o checkpoint continua salvo."
-            )
-        remaining = quota.get("tokens_remaining")
-        reset_at = quota.get("tokens_reset_at")
-        if remaining is not None and remaining < estimated and reset_at:
-            wait = max(0.0, reset_at - now) + 1
-            if wait > 300:
-                raise RuntimeError(
-                    f"Groq: aguarde {wait:.0f}s pela renovação da cota de tokens; "
-                    "o checkpoint continua salvo."
-                )
-            # Token counts and wait duration only; no API credentials.
-            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-            logger.info("Cota de tokens insuficiente (%s < ~%s); aguardando %.0fs",
-                        remaining, estimated, wait)
-            time.sleep(wait)
-            quota["tokens_remaining"] = quota.get("tokens_limit", estimated)
-        calls.append(time.monotonic())
-
-    def _invoke_groq(self, messages: list):
-        """Lê os headers sem fazer uma segunda chamada só para consultar cotas."""
-        client = getattr(self.llm, "client", None)
-        raw_client = getattr(client, "with_raw_response", None)
-        if raw_client is None:  # Permite clientes substitutos em testes.
-            return self.llm.invoke(messages)
-        groq_messages = [
-            {"role": "system" if isinstance(m, SystemMessage) else "user",
-             "content": m.content} for m in messages
-        ]
-        options = {}
-        if self.model_name == "qwen/qwen3.8-27b" and self._output_budget() <= 1000:
-            options["reasoning_effort"] = "none"
-        raw = raw_client.create(
-            model=self.model_name, messages=groq_messages,
-            temperature=self.temperature, max_tokens=self._output_budget(), **options,
-        )
-        self._record_quota(raw.headers)
-        completion = raw.parse()
-        choice = completion.choices[0]
-        if getattr(choice, "finish_reason", None) == "length":
-            raise GroqOutputTruncated(
-                "Resposta truncada pelo teto de saída; dividir a extração antes de publicar."
-            )
-        return AIMessage(content=choice.message.content or "")
-
-    def _invoke_with_rotation(self, messages: list, sleep_between: float = 8.0):
-        """
-        Rotaciona chaves ao esgotar a cota diária e tenta novamente falhas
-        temporárias do serviço, sempre com um número finito de tentativas.
-        """
-        rate_limit_failures = 0
-        transient_failures = 0
-        failures_by_account = {}
-        while True:
-            try:
-                if self._independent_accounts():
-                    self._select_available_account(messages)
-                    rate_limit_failures = failures_by_account.get(self._current_key_idx, 0)
-                self._before_groq_request(messages, enforce_rpm=(
-                    self._independent_accounts() or rate_limit_failures == 0))
-                return self._invoke_groq(messages)
-            except Exception as e:
-                self._record_quota(getattr(getattr(e, "response", None), "headers", None))
-                err_str = str(e)
-                is_rate_limit = (getattr(e, "status_code", None) == 429
-                                 or "429" in err_str or "rate_limit" in err_str.lower())
-                is_daily_limit = "tokens per day" in err_str.lower() or "TPD" in err_str
-
-                if is_rate_limit:
-                    headers = getattr(getattr(e, "response", None), "headers", None) or {}
-                    body = getattr(e, "body", None)
-                    details = body.get("error", body) if isinstance(body, dict) else {}
-                    if not isinstance(details, dict):
-                        details = {}
-                    message = str(details.get("message", "")) + " " + err_str
-                    counts = {
-                        label: re.search(rf"\b{label}\s*[:=]?\s*([\d,]+)", message, re.I)
-                        for label in ("Limit", "Used", "Requested")
-                    }
-                    numbers = {label: int(match.group(1).replace(",", ""))
-                               for label, match in counts.items() if match}
-                    logger.warning(
-                        "Groq 429: tipo=%s, código=%s, retry-after=%s; "
-                        "tokens/min restantes=%s, requisições/dia restantes=%s",
-                        details.get("type", "?"), details.get("code", "?"),
-                        headers.get("retry-after", "?"),
-                        headers.get("x-ratelimit-remaining-tokens", "?"),
-                        headers.get("x-ratelimit-remaining-requests", "?"),
-                    )
-                    logger.warning("Detalhe Groq 429: %s", self._groq_error_detail(e))
-                    if numbers:
-                        logger.warning("Groq: limite=%s; usados=%s; solicitados=%s tokens",
-                                       numbers.get("Limit", "?"), numbers.get("Used", "?"),
-                                       numbers.get("Requested", "?"))
-                    is_daily_limit = is_daily_limit or "tokens per day" in message.lower() or "tpd" in message.lower()
-                    is_output_limit = ("output tokens per minute" in message.lower()
-                                       or "otpm" in message.lower())
-                    if is_output_limit and numbers.get("Limit", 0) > 0:
-                        cap = max(1, int(numbers["Limit"] * 0.95))
-                        if cap < self._output_budget():
-                            self._output_token_cap = cap
-                            self._rpm_budget_override = 1
-                            # Output token budget only; no API credentials.
-                            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-                            logger.warning("Groq OTPM: reduzindo max_tokens para %s", cap)
-                            continue
-                    if not is_daily_limit and not is_output_limit and (
-                        (numbers.get("Requested", 0) > numbers.get("Limit", float("inf")))
-                        or "request too large" in message.lower()
-                    ):
-                        raise GroqRequestTooLarge(
-                            "Groq recusou o tamanho deste pedido de tokens: "
-                            + self._groq_error_detail(e)
-                        ) from e
-                    if is_daily_limit:
-                        # Limite diário esgotado — tenta próxima chave
-                        logger.warning(f"Chave {self._current_key_idx + 1} esgotou limite diário.")
-                        if self._independent_accounts():
-                            state = self._save_account()
-                            state["quota"]["requests_remaining"] = 0
-                            # Um limite diário de tokens também torna a conta indisponível.
-                            state["quota"]["requests_reset_at"] = time.monotonic() + max(
-                                301, self._rate_limit_wait(e))
-                        elif not self._rotate_key():
-                            raise RuntimeError(
-                                "Groq: cota diária esgotada nas chaves configuradas; "
-                                "a análise pode ser retomada a partir do checkpoint."
-                            ) from e
-                        rate_limit_failures = 0
-                        transient_failures = 0
-                        continue
-                    else:
-                        # O 429 pode indicar limite de tokens ou de requisições.
-                        # Respeita o prazo informado pela API, sem assumir 60s.
-                        self._rpm_budget_override = 1
-                        if rate_limit_failures >= 3:
-                            quota = getattr(self, "_quota", {})
-                            if (not is_output_limit and details.get("type") == "tokens"
-                                    and quota.get("tokens_limit")
-                                    and quota.get("tokens_remaining", 0) >= quota["tokens_limit"]):
-                                raise GroqRequestTooLarge(
-                                    "Groq recusou este pedido mesmo com saldo de tokens/min "
-                                    "renovado; tentando um lote menor."
-                                ) from e
-                            raise RuntimeError(
-                                "Groq manteve o limite de uso (429) "
-                                "após três esperas; retome após a cota ficar disponível. "
-                                "O checkpoint continua salvo."
-                            ) from e
-                        wait_secs = self._rate_limit_wait(e)
-                        if wait_secs > 300:
-                            raise RuntimeError(
-                                f"Groq pediu uma espera de {wait_secs:.0f}s por limite de uso "
-                                "(429). Retome a análise depois desse prazo; "
-                                "o checkpoint continua salvo."
-                            ) from e
-                        logger.warning("Groq: conta atual indisponível por %.0fs%s", wait_secs,
-                                       "; verificando outras contas" if self._independent_accounts() else "")
-                        rate_limit_failures += 1
-                        if self._independent_accounts():
-                            failures_by_account[self._current_key_idx] = rate_limit_failures
-                            self._save_account()["cooldown_until"] = time.monotonic() + wait_secs
-                        else:
-                            time.sleep(wait_secs)
-                        continue
-                else:
-                    status = getattr(e, "status_code", None)
-                    transient = status in (500, 502, 503, 504) or (
-                        status is None and (
-                            "503" in err_str
-                            or type(e).__name__ in {
-                                "APIConnectionError", "APITimeoutError",
-                                "ConnectError", "RemoteProtocolError", "TimeoutException",
-                            }
-                        )
-                    )
-                    if transient and transient_failures < 3:
-                        delay = (5, 15, 30)[transient_failures]
-                        transient_failures += 1
-                        logger.warning(
-                            "Falha temporária da Groq (%s). Tentativa adicional %s/3 em %ss",
-                            status or type(e).__name__, transient_failures, delay,
-                        )
-                        time.sleep(delay)
-                        continue
-                    raise
+    def _invoke_llm(self, messages: list):
+        return self.llm.invoke_messages(messages)
 
     def analyze_chunk(self, chunk: dict, system_prompt: str | None = None) -> dict:
         """
@@ -568,7 +111,7 @@ class Node3RequirementAnalyzer:
         else:
             messages = [HumanMessage(content=prompt)]
 
-        response = self._invoke_with_rotation(messages)
+        response = self._invoke_llm(messages)
 
         return {
             "requirements": self._extract_requirements_from_response(response.content),
@@ -1565,7 +1108,7 @@ Regras:
         last_parsed = None
         last_error = None
         for attempt in range(3):
-            response = self._invoke_with_rotation([
+            response = self._invoke_llm([
                 system_msg, HumanMessage(content=prompt + correction)
             ])
             try:
@@ -1623,7 +1166,6 @@ Regras:
                     "dela. Não transforme regra condicional em incondicional. "
                     "Não altere nem invente números de página."
                 )
-                time.sleep(8)
         if last_parsed is not None:
             last_parsed["_unverified_rules"] = list(pending.values())
             if pending:
@@ -1700,7 +1242,7 @@ Regras:
                         })
                     try:
                         result = self._extract_verified_batch([fragment], system_msg, fragment_context)
-                    except GroqRequestTooLarge as failure:
+                    except GeminiRequestTooLarge as failure:
                         error = failure
                     else:
                         cache[key] = {"parsed": result[0], "sources": result[1]}
@@ -1708,7 +1250,7 @@ Regras:
                         return result
                 cut = self._extraction_text_cut(text)
                 if cut is None or depth >= 8:
-                    raise GroqRequestTooLarge(
+                    raise GeminiRequestTooLarge(
                         f"Não foi possível concluir a extração de um subtrecho de {len(text)} "
                         "caracteres dentro do orçamento de tokens. As partes concluídas "
                         "continuam salvas no checkpoint. " + str(error)
@@ -1739,7 +1281,7 @@ Regras:
             if not saved.get("split"):
                 try:
                     result = self._extract_verified_batch(batch[start:end], system_msg, context)
-                except GroqRequestTooLarge as error:
+                except GeminiRequestTooLarge as error:
                     if end - start <= 1:
                         cache[key] = {"text_split": True}
                         self._save_checkpoint(checkpoint)
@@ -1828,7 +1370,7 @@ Regras:
             f"ITENS EXTRAÍDOS:\n{context}\n\n"
             f"TRECHOS RECUPERADOS DO MESMO EDITAL:\n{json.dumps(evidence, ensure_ascii=False)}"
         )
-        response = self._invoke_with_rotation([
+        response = self._invoke_llm([
             SystemMessage(content="Redija apenas JSON válido, sem markdown."),
             HumanMessage(content=prompt),
         ])
@@ -2125,7 +1667,6 @@ Regras:
                     enriched = True
             if enriched and checkpoint is not None:
                 self._save_checkpoint(checkpoint)
-            invoked_this_task = False
             for attempt in range(3):
                 missing = [entry for entry in batch if entry["id"] not in explanations_by_id]
                 if not missing:
@@ -2140,7 +1681,6 @@ Regras:
                             stage="Explicando todos os requisitos",
                             query_atual=f"{topic}: repetindo IDs {[entry['id'] for entry in missing]} ({attempt + 1}/3)",
                         )
-                    time.sleep(8)
                 prompt = (
                     "Explique TODOS os itens abaixo, um por um, em português simples para quem "
                     "nunca participou de uma licitação. Para cada ID, escreva até 2 frases "
@@ -2182,8 +1722,7 @@ Regras:
                     f"{json.dumps({} if rule_sources is not None else self._explanation_context(missing, agg, chunks or []), ensure_ascii=False)}"
                     f"\nITENS: {json.dumps(missing, ensure_ascii=False)}"
                 )
-                invoked_this_task = True
-                response = self._invoke_with_rotation([
+                response = self._invoke_llm([
                     SystemMessage(content="Responda apenas JSON válido com todos os IDs recebidos."),
                     HumanMessage(content=prompt),
                 ])
@@ -2267,8 +1806,6 @@ Regras:
                     f"{offset + len(batch)} (IDs faltantes: {missing_ids}); relatório não publicado."
                 )
             explained[topic].extend([explanations_by_id[entry["id"]] for entry in batch])
-            if invoked_this_task and task_index < len(tasks):
-                time.sleep(8)
 
         for topic, items in topics.items():
             if len(explained[topic]) != len(items):
@@ -2282,7 +1819,6 @@ Regras:
         Reducao de 90pct no consumo de tokens.
         """
         BATCH_SIZE    = 5
-        SLEEP_BETWEEN = 8
 
         system_msg = SystemMessage(content=(
             "Voce e um especialista em licitacoes publicas brasileiras (Lei 14.133/2021). "
@@ -2401,8 +1937,6 @@ Regras:
                     "os lotes anteriores e as partes concluídas foram salvos para retomada."
                 ) from e
 
-            if b_idx + 1 < total:
-                time.sleep(SLEEP_BETWEEN)
 
         agg["nivel_risco"] = max_risk
 
@@ -2749,3 +2283,4 @@ Regras:
 
         logger.info("Validação de integração concluída")
         return True
+

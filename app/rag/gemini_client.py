@@ -8,6 +8,8 @@ import threading
 import time
 from collections import deque
 
+from app import telemetry
+
 logger = logging.getLogger(__name__)
 _states = {}
 _lock = threading.Lock()
@@ -22,34 +24,34 @@ class GeminiOutputTruncated(GeminiRequestTooLarge):
 
 
 def provider_name():
-    provider = os.getenv('TOPIC_LLM_PROVIDER', '').strip().lower()
-    if not provider:
-        provider = 'gemini' if os.getenv('GEMINI_API_KEY', '').strip() else 'groq'
-    if provider not in ('gemini', 'groq'):
-        raise ValueError('TOPIC_LLM_PROVIDER deve ser gemini ou groq.')
-    return provider
+    provider = os.getenv('TOPIC_LLM_PROVIDER', 'gemini').strip().lower() or 'gemini'
+    if provider != 'gemini':
+        raise ValueError('Somente Gemini é suportado. Remova TOPIC_LLM_PROVIDER ou use gemini.')
+    return 'gemini'
 
 
 def validate_topic_configuration():
-    provider = provider_name()
-    name = 'GEMINI_API_KEY' if provider == 'gemini' else 'GROQ_API_KEY'
-    if not os.getenv(name, '').strip() or os.getenv(name) == 'your_groq_api_key_here':
-        raise ValueError(f'Configure {name} para organizar os assuntos.')
-    return provider
+    provider_name()
+    if not os.getenv('GEMINI_API_KEY', '').strip():
+        raise ValueError('Configure GEMINI_API_KEY para organizar os assuntos.')
+    return 'gemini'
 
 
 class GeminiTopicClient:
-    def __init__(self, progress=None, llm=None):
-        self.key = os.getenv('GEMINI_API_KEY', '').strip()
+    def __init__(self, progress=None, llm=None, *, api_key=None, model=None, max_tokens=None, temperature=0.2):
+        self.key = (api_key or os.getenv('GEMINI_API_KEY', '')).strip()
         if not self.key:
             raise ValueError('Configure GEMINI_API_KEY no .env.')
-        self.model = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
+        self.model = model or os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
         if not re.fullmatch(r'[a-zA-Z0-9_.-]+', self.model):
             raise ValueError('GEMINI_MODEL inválido.')
         self.rpm = max(1, int(os.getenv('GEMINI_RPM_BUDGET', '10')))
         self.tpm = max(1, int(os.getenv('GEMINI_TPM_BUDGET', '100000')))
         self.rpd = max(1, int(os.getenv('GEMINI_RPD_BUDGET', '500')))
         self.output = max(1, int(os.getenv('GEMINI_OUTPUT_TOKEN_BUDGET', '8192')))
+        if max_tokens is not None:
+            self.output = min(self.output, max(1, max_tokens))
+        self.temperature = temperature
         self.progress = progress or (lambda **kw: None)
         self.llm = llm
         # Mesmo projeto com mais de uma chave deve compartilhar esse identificador.
@@ -73,7 +75,7 @@ class GeminiTopicClient:
                 while day and now - day[0] >= 86400:
                     day.popleft()
                 if len(day) >= self.rpd:
-                    raise RuntimeError('Cota diária local do Gemini atingida; subtemas validados preservados na sessão.')
+                    raise RuntimeError('Cota diária local do Gemini atingida; resultados validados preservados para retomada.')
                 ready = self.state['cooldown']
                 if minute:
                     # Espaçamento preventivo, sem confundir RPM com o tempo de geração.
@@ -94,27 +96,34 @@ class GeminiTopicClient:
                 wait = ready - now
             if wait > 300:
                 raise RuntimeError('Gemini exige uma espera superior a cinco minutos; retome depois. '
-                                   'Subtemas validados preservados na sessão.')
+                                   'Resultados validados preservados para retomada.')
             self.progress(activity='waiting', activity_message='Aguardando a próxima janela de cota do Gemini.',
                           wait_until=time.time() + wait)
-            time.sleep(min(wait, 30))
+            seconds = min(wait, 30)
+            with telemetry.stage("llm.wait", provider="gemini"):
+                time.sleep(seconds)
+            telemetry.quota_wait("gemini", seconds)
         self._event('requesting', 'Gemini está identificando e organizando os assuntos.',
                     local_requests_remaining=remaining, provider='gemini', model=self.model)
         return reservation
 
     def _invoke_model(self, system, text, schema):
         from langchain_core.messages import SystemMessage, HumanMessage
+        return self._invoke_messages_model([SystemMessage(content=system), HumanMessage(content=text)], schema)
+
+    def _invoke_messages_model(self, messages, schema=None):
         if self.llm is None:
             from langchain_google_genai import ChatGoogleGenerativeAI
             options = dict(model=self.model, api_key=self.key, vertexai=False,
-                           temperature=0.2, max_tokens=self.output, timeout=120,
+                           temperature=self.temperature, max_tokens=self.output, timeout=120,
                            max_retries=0)
             if self.model == 'gemini-3.5-flash-lite':
                 options['thinking_level'] = 'minimal'
             self.llm = ChatGoogleGenerativeAI(**options)
-        # Keep the raw AIMessage: inspect finish_reason and usage before parsing.
-        return self.llm.invoke([SystemMessage(content=system), HumanMessage(content=text)],
-                               response_mime_type='application/json', response_json_schema=schema)
+        options = {}
+        if schema is not None:
+            options = dict(response_mime_type='application/json', response_json_schema=schema)
+        return self.llm.invoke(messages, **options)
 
     @staticmethod
     def _api_error(error):
@@ -174,10 +183,26 @@ class GeminiTopicClient:
         # Estimativa conservadora em bytes; o consumo real vem em usageMetadata.
         estimated = len((system + text).encode('utf-8')) + 64
         schema = self._schema(payload)
+        result = self._request(estimated, lambda: self._invoke_model(system, text, schema))
+        try:
+            parsed = json.loads(result.content)
+        except ValueError:
+            raise ValueError('Gemini retornou JSON inválido; corrigir o formato.') from None
+        if not isinstance(parsed, dict):
+            raise ValueError('Gemini deve retornar um objeto JSON.')
+        return parsed
+
+    def invoke_messages(self, messages):
+        """Shared quota/retry/telemetry path for the full analysis workflow."""
+        estimated = sum(len(str(message.content).encode('utf-8')) for message in messages) + 64
+        return self._request(estimated, lambda: self._invoke_messages_model(messages))
+
+    def _request(self, estimated, call):
         for attempt in range(4):
             reservation = self._reserve(estimated)
             try:
-                result = self._invoke_model(system, text, schema)
+                with telemetry.stage("llm.request", provider="gemini", model=self.model):
+                    result = call()
             except Exception as error:
                 exc = self._api_error(error)
                 if exc is None:
@@ -192,15 +217,16 @@ class GeminiTopicClient:
                     with _lock:
                         self.state['cooldown'] = max(self.state['cooldown'], time.monotonic() + delay)
                     raise RuntimeError('Cota Gemini indisponível; retome após sua renovação. '
-                                       'Subtemas validados preservados na sessão.') from None
+                                       'Resultados validados preservados para retomada.') from None
                 if attempt == 3:
                     raise RuntimeError('Gemini continuou indisponível após três novas tentativas; '
-                                       'subtemas validados preservados na sessão.') from None
+                                       'resultados validados preservados para retomada.') from None
                 with _lock:
                     self.state['cooldown'] = max(self.state['cooldown'], time.monotonic() + delay)
                 self._event('retrying', f'Gemini indisponível; nova tentativa {attempt + 1}/3.', retry=attempt + 1)
                 continue
             usage = result.usage_metadata or {}
+            telemetry.llm_usage("gemini", usage.get("input_tokens"), usage.get("output_tokens"))
             actual = usage.get('input_tokens')
             if isinstance(actual, int) and actual > 0:
                 with _lock:
@@ -219,11 +245,6 @@ class GeminiTopicClient:
                                   and not part.get('thought'))
             if not content:
                 raise RuntimeError('Gemini não retornou conteúdo para este lote.')
-            try:
-                parsed = json.loads(content)
-            except ValueError:
-                raise ValueError('Gemini retornou JSON inválido; corrigir o formato.') from None
-            if not isinstance(parsed, dict):
-                raise ValueError('Gemini deve retornar um objeto JSON.')
+            result = result.model_copy(update={'content': content})
             logger.info('Gemini: modelo=%s, entrada=%s, saída=%s', self.model, actual, usage.get('output_tokens'))
-            return parsed
+            return result

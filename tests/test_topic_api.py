@@ -1,4 +1,4 @@
-"""API do mapa sem Groq antecipada e citações verificadas no chat."""
+"""API do mapa com Gemini e referências verificadas."""
 
 import importlib.util
 import os
@@ -47,7 +47,7 @@ def load_api():
 
 class APITests(unittest.TestCase):
     def setUp(self):
-        env = patch.dict(os.environ, {"GROQ_API_KEY": "test-key", "NODE3_MOCK_MODE": "false", "TOPIC_LLM_PROVIDER": "groq"})
+        env = patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "NODE3_MOCK_MODE": "false", "TOPIC_LLM_PROVIDER": "gemini"})
         env.start(); self.addCleanup(env.stop)
         self.api, self.modules = load_api()
         self.stack = patch.dict(sys.modules, self.modules)
@@ -67,8 +67,8 @@ class APITests(unittest.TestCase):
         class Analyzer:
             calls = []
             def __init__(self, **kw): pass
-            def _invoke_with_rotation(self, messages):
-                self.calls.append(json.loads(messages[1].content))
+            def invoke(self, system, payload):
+                self.calls.append(payload)
                 if "passages" in self.calls[-1]:
                     entry = self.calls[-1]["passages"][0]
                     output = {"topics": [{"theme": "Documentação", "title": "Capacidade técnica",
@@ -76,14 +76,14 @@ class APITests(unittest.TestCase):
                 else:
                     output = {"themes": [{"title": "Documentos para participar", "subtopics": [
                         {"title": "Capacidade técnica", "source_ids": ["0"]}]}]}
-                return types.SimpleNamespace(content=json.dumps(output))
+                return output
             _parse_llm_json = staticmethod(json.loads)
         node3.Node3RequirementAnalyzer = Analyzer
         messages = types.ModuleType("langchain_core.messages")
         messages.SystemMessage = messages.HumanMessage = lambda content: types.SimpleNamespace(content=content)
         with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1,
                 "app.rag.node_3_analyzer": node3, "langchain_core": types.ModuleType("langchain_core"),
-                "langchain_core.messages": messages}):
+                "langchain_core.messages": messages}), patch.object(self.api, "GeminiTopicClient", Analyzer):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
             self.api._run_topic_job("job", "edital.pdf")
         result = self.api._jobs["job"]["result"]
@@ -97,7 +97,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.api._jobs["job"]["progress"]["completed"], 1)
         self.assertFalse(hasattr(self.api, "ask_about_edital"))
 
-    def test_gemini_upload_organizes_without_groq_and_publishes_activity(self):
+    def test_gemini_upload_publishes_activity(self):
         node1 = types.ModuleType("app.rag.node_1_reader_chunker")
         node1.Node1ReaderChunker = lambda **kw: types.SimpleNamespace(
             process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4,
@@ -118,7 +118,7 @@ class APITests(unittest.TestCase):
                 self.api, "provider_name", return_value="gemini"), patch.object(
                 self.api, "validate_topic_configuration"), patch.object(
                 self.api, "GeminiTopicClient", Gemini), patch.object(
-                self.api, "validate_analysis_configuration", side_effect=AssertionError("Groq should not run")):
+                self.api, "validate_analysis_configuration", side_effect=AssertionError("Full analysis should not run")):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
             self.api._run_topic_job("job", "edital.pdf")
         self.assertEqual(self.api._jobs["job"]["result"]["organization_status"], "done")
@@ -131,7 +131,7 @@ class APITests(unittest.TestCase):
             process_pdf=lambda path: {"chunks": [self.chunk], "page_count": 4,
                 "pages_text": ["", "", "", self.chunk["content"]]})
         with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1}), patch.object(
-                self.api, "validate_analysis_configuration", side_effect=ValueError("Cota indisponível")):
+                self.api, "validate_topic_configuration", side_effect=ValueError("Cota indisponível")):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
             self.api._run_topic_job("job", "edital.pdf")
         result = self.api._jobs["job"]["result"]
@@ -148,20 +148,19 @@ class APITests(unittest.TestCase):
         node3 = types.ModuleType("app.rag.node_3_analyzer")
         class Analyzer:
             def __init__(self, **kw): pass
-            def _invoke_with_rotation(self, messages):
-                payload = json.loads(messages[1].content)
+            def invoke(self, system, payload):
                 if "passages" not in payload:
                     raise RuntimeError("Consolidação interrompida")
-                return types.SimpleNamespace(content=json.dumps({"topics": [{
+                return {"topics": [{
                     "theme": "Documentação", "title": "Capacidade técnica", "sources": [
-                        {"id": payload["passages"][0]["id"], "lines": [1]}]}]}))
+                        {"id": payload["passages"][0]["id"], "lines": [1]}]}]}
             _parse_llm_json = staticmethod(json.loads)
         node3.Node3RequirementAnalyzer = Analyzer
         messages = types.ModuleType("langchain_core.messages")
         messages.SystemMessage = messages.HumanMessage = lambda content: types.SimpleNamespace(content=content)
         with patch.dict(sys.modules, {"app.rag.node_1_reader_chunker": node1,
                 "app.rag.node_3_analyzer": node3, "langchain_core": types.ModuleType("langchain_core"),
-                "langchain_core.messages": messages}):
+                "langchain_core.messages": messages}), patch.object(self.api, "GeminiTopicClient", Analyzer):
             self.api._jobs["job"] = {"status": "queued", "progress": {}, "result": None}
             self.api._run_topic_job("job", "edital.pdf")
         result = self.api._jobs["job"]["result"]

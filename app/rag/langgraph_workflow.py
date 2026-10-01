@@ -4,6 +4,8 @@ LangGraph Workflow para LicitGraphAi
 Orquestra todos os nós do sistema usando LangGraph com estado compartilhado.
 """
 
+from app.telemetry import observed_stage
+
 from typing import TypedDict, List, Dict, Optional
 from langgraph.graph import StateGraph, END
 import logging
@@ -44,6 +46,7 @@ class LicitGraphState(TypedDict):
     error: Optional[str]
 
 
+@observed_stage("pipeline.pdf")
 def node_1_reader_chunker(state: LicitGraphState) -> LicitGraphState:
     """
     Nó 1: Leitor e Fragmentador (Wrapper para LangGraph)
@@ -69,6 +72,7 @@ def node_1_reader_chunker(state: LicitGraphState) -> LicitGraphState:
         return state
 
 
+@observed_stage("pipeline.embeddings")
 def node_2_embeddings(state: LicitGraphState) -> LicitGraphState:
     """
     Nó 2: Geração de Embeddings (Wrapper para LangGraph)
@@ -108,6 +112,7 @@ def node_2_embeddings(state: LicitGraphState) -> LicitGraphState:
         return state
 
 
+@observed_stage("pipeline.analysis")
 def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
     """
     Nó 3: Analisador de Requisitos (Wrapper para LangGraph)
@@ -128,7 +133,7 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
         if mock_mode:
             logger.info("Nó 3: Modo de demonstração ativado explicitamente")
         else:
-            logger.info("Nó 3: Usando API Groq real com RAG")
+            logger.info("Nó 3: Usando API Gemini real com RAG")
 
         node3 = Node3RequirementAnalyzer(
             mock_mode=mock_mode,
@@ -148,6 +153,7 @@ def node_3_analyzer(state: LicitGraphState) -> LicitGraphState:
         return state
 
 
+@observed_stage("pipeline.checklist")
 def node_4_document_generator(state: LicitGraphState) -> LicitGraphState:
     """
     Nó 4: Gerador de Checklist (Wrapper para LangGraph)
