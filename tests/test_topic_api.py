@@ -1,6 +1,7 @@
 """API do mapa sem Groq antecipada e citações verificadas no chat."""
 
 import importlib.util
+import os
 import json
 import numpy  # Mantém o módulo carregado durante mocks de sys.modules.
 import sys
@@ -47,6 +48,8 @@ def load_api():
 
 class APITests(unittest.TestCase):
     def setUp(self):
+        env = patch.dict(os.environ, {"GROQ_API_KEY": "test-key", "NODE3_MOCK_MODE": "false", "TOPIC_LLM_PROVIDER": "groq"})
+        env.start(); self.addCleanup(env.stop)
         self.api, self.modules = load_api()
         self.stack = patch.dict(sys.modules, self.modules)
         self.stack.start()
