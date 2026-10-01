@@ -143,3 +143,13 @@ Consulte [a configuração e os critérios de aprovação](docs/ci.md).
 O ChromaDB usa o backend Rust local com embeddings explícitos. Alertas sem correção
 informada são avisos não bloqueantes; alertas com correção disponível reprovam
 a auditoria. O relatório bruto é preservado. Veja [os controles e limites dessa revisão](docs/chroma-security.md).
+
+
+## Observabilidade
+
+OpenTelemetry instrumenta HTTP, jobs, etapas do mapa e do LangGraph, chamadas à
+IA, consumo de tokens e espera por cota. Alloy encaminha métricas para Prometheus,
+logs para Loki e traces para Tempo. Grafana inclui um dashboard provisionado.
+A coleta é opcional e não exporta o conteúdo dos documentos ou credenciais.
+
+Veja [como executar e consultar a telemetria](docs/observability.md).

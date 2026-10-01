@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import os
 import pytest
+from app import telemetry
 
 
 @pytest.fixture
@@ -14,7 +15,7 @@ def client(monkeypatch):
     source = Path(__file__).parents[1] / 'app/rag/node_3_analyzer.py'
     tree = ast.parse(source.read_text(encoding='utf-8'))
     classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
-    namespace = dict(ChatGroq=object, Path=Path, time=time, os=os, deque=deque, logger=logging.getLogger(__name__), re=__import__('re'))
+    namespace = dict(telemetry=telemetry, ChatGroq=object, Path=Path, time=time, os=os, deque=deque, logger=logging.getLogger(__name__), re=__import__('re'))
     exec(compile(ast.Module(body=classes, type_ignores=[]), str(source), 'exec'), namespace)
     node = object.__new__(namespace['Node3RequirementAnalyzer'])
     node._api_keys = ['account-a', 'account-b', 'account-c']

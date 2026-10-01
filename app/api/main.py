@@ -24,14 +24,19 @@ from app.rag.gemini_client import provider_name, validate_topic_configuration, G
 load_dotenv()
 
 from app.analysis_config import is_mock_mode, validate_analysis_configuration
+from app import telemetry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
+    telemetry.configure()
     logger.info("api_startup duration_ms=%.1f", (time.perf_counter() - _IMPORT_STARTED) * 1000)
-    yield
+    try:
+        yield
+    finally:
+        telemetry.shutdown()
 
 
 app = FastAPI(
@@ -51,6 +56,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(telemetry.TelemetryMiddleware)
+
 UPLOAD_DIR = Path("data/raw/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +68,7 @@ _jobs_lock = threading.Lock()
 _documents: dict[str, dict] = {}
 
 
+@telemetry.observed_job("organization")
 def _run_organization_job(job_id: str):
     """Organiza nomes e agrupamentos; retém o índice e lotes válidos após falhas."""
     from app.rag.topic_organizer import organize_topic_map, inspect_annex_references
@@ -96,12 +104,13 @@ def _run_organization_job(job_id: str):
                 topic_map = recovery.enrich(topic_map)
                 with _jobs_lock:
                     _jobs[job_id]["result"].update(topic_map=topic_map, partial_map=True)
-            organized = organize_topic_map(
-                session["structural_topics"], session["chunks"], invoke,
-                cache=session["organization_cache"],
-                progress=lambda **kw: _update_progress(job_id, **kw), on_partial=publish_partial,
-                batch_max_chars=16000 if provider == "gemini" else 8000,
-                batch_max_entries=12 if provider == "gemini" else 8)
+            with telemetry.stage("map.organize", provider=provider):
+                organized = organize_topic_map(
+                    session["structural_topics"], session["chunks"], invoke,
+                    cache=session["organization_cache"],
+                    progress=lambda **kw: _update_progress(job_id, **kw), on_partial=publish_partial,
+                    batch_max_chars=16000 if provider == "gemini" else 8000,
+                    batch_max_entries=12 if provider == "gemini" else 8)
             if all_chunk_ids(organized) != all_chunk_ids(session["structural_topics"]):
                 raise ValueError("A organização perdeu referências do PDF.")
             organized = recovery.enrich(organized)
@@ -122,6 +131,7 @@ def _run_organization_job(job_id: str):
             _jobs[job_id]["progress"]["stage"] = "Organização interrompida; subtemas validados e índice original preservados"
 
 
+@telemetry.observed_job("map")
 def _run_topic_job(job_id: str, file_path: str):
     """Lê o índice estrutural e organiza assuntos com IA, sem explicações."""
     try:
@@ -131,12 +141,14 @@ def _run_topic_job(job_id: str, file_path: str):
         with _jobs_lock:
             _jobs[job_id]["status"] = "running"
             _jobs[job_id]["progress"]["stage"] = "Lendo páginas e identificando seções"
-        parsed = Node1ReaderChunker(chunk_by_sections=False,
-                                   preserve_document_structure=True).process_pdf(file_path)
+        with telemetry.stage("pdf.read"):
+            parsed = Node1ReaderChunker(chunk_by_sections=False,
+                                       preserve_document_structure=True).process_pdf(file_path)
         chunks = parsed["chunks"]
         if not chunks:
             raise ValueError("O PDF não contém texto extraível.")
-        topic_map = build_topic_map(chunks)
+        with telemetry.stage("map.structural_index"):
+            topic_map = build_topic_map(chunks)
         session = {"chunks": chunks, "pages_text": parsed.get("pages_text", []),
                    "pages_tables": parsed.get("pages_tables", []),
                    "topics": topic_map, "structural_topics": topic_map,
@@ -163,6 +175,7 @@ def _update_progress(job_id: str, **kwargs):
             _jobs[job_id]["progress"]["updated_at"] = time.time()
 
 
+@telemetry.observed_job("full_pipeline")
 def _run_pipeline_job(job_id: str, file_path: str, company_profile: Optional[dict]):
     """Executa o pipeline em background, publicando progresso."""
     n3_module = None
@@ -315,8 +328,7 @@ async def analyze_with_upload(file: UploadFile = File(...)):
             "error": None,
         }
 
-    thread = threading.Thread(target=_run_topic_job, args=(job_id, str(file_path)), daemon=True)
-    thread.start()
+    telemetry.start_thread(_run_topic_job, (job_id, str(file_path)))
 
     return {
         "message": "Preparação do mapa iniciada",
@@ -348,7 +360,7 @@ async def analyze_full_with_upload(file: UploadFile = File(...)):
             "progress": {"stage": "Na fila...", "updated_at": time.time()},
             "result": None, "error": None,
         }
-    threading.Thread(target=_run_pipeline_job, args=(job_id, str(path), None), daemon=True).start()
+    telemetry.start_thread(_run_pipeline_job, (job_id, str(path), None))
     return {"job_id": job_id, "poll_url": f"/job/{job_id}"}
 
 
@@ -367,10 +379,11 @@ def retry_map_organization(job_id: str):
         job["result"]["organization_status"] = "running"
         job["result"]["organization_error"] = None
         job["progress"]["stage"] = "Retomando organização dos assuntos"
-    threading.Thread(target=_run_organization_job, args=(job_id,), daemon=True).start()
+    telemetry.start_thread(_run_organization_job, (job_id,))
     return {"job_id": job_id, "status": "running"}
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

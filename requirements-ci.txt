@@ -14,3 +14,8 @@ python-multipart==0.0.32
 requests==2.34.2
 streamlit==1.64.0
 chromadb==1.5.9
+
+
+# OpenTelemetry OTLP over HTTP (optional at runtime)
+opentelemetry-sdk==1.45.0
+opentelemetry-exporter-otlp-proto-http==1.45.0

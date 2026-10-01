@@ -207,12 +207,46 @@ jobs:
           path: reports/gitleaks.json
           retention-days: 7
 
+  observability:
+    name: Observability stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install opentelemetry-sdk==1.45.0 opentelemetry-exporter-otlp-proto-http==1.45.0 requests
+      - name: Create ephemeral Grafana credentials
+        run: echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+      - run: docker compose -f compose.observability.yaml config --quiet
+      - run: docker compose -f compose.observability.yaml run --rm --no-deps alloy validate /etc/alloy/config.alloy
+      - run: docker compose -f compose.observability.yaml run --rm --no-deps --entrypoint /bin/promtool prometheus check config /etc/prometheus/prometheus.yaml
+      - run: docker compose -f compose.observability.yaml up -d
+      - name: Verify metrics, logs, traces and dashboard
+        run: python -m scripts.smoke_observability
+      - name: Save infrastructure logs
+        if: always()
+        run: |
+          mkdir -p reports
+          docker compose -f compose.observability.yaml logs --no-color > reports/observability.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: observability-report
+          path: reports/observability.log
+          retention-days: 7
+      - run: docker compose -f compose.observability.yaml down -v
+        if: always()
+
   gate:
     name: CI gate
     runs-on: ubuntu-latest
     timeout-minutes: 2
     if: always()
-    needs: [lint, tests, bandit, semgrep, dependencies, secrets]
+    needs: [lint, tests, bandit, semgrep, dependencies, secrets, observability]
     env:
       CHECK_RESULTS: ${{ toJSON(needs) }}
     steps:
@@ -232,3 +266,4 @@ jobs:
               print('Failed or incomplete checks: ' + ', '.join(failed))
               sys.exit(1)
           PY
+

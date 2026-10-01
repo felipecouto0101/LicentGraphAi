@@ -1,3 +1,4 @@
+from app import telemetry
 import logging
 import os
 import re
@@ -222,7 +223,7 @@ class Node3RequirementAnalyzer:
                 raise RuntimeError("Groq: nenhuma conta disponível neste momento; "
                                    "retome depois. O checkpoint continua salvo.")
             logger.info("Groq: todas as contas em espera; próxima janela em %.0fs", wait)
-            time.sleep(min(60, max(1, wait)))
+            self._telemetry_sleep(min(60, max(1, wait)))
 
     @staticmethod
     def _rate_limit_wait(error: Exception) -> float:
@@ -316,7 +317,7 @@ class Node3RequirementAnalyzer:
         while enforce_rpm and len(calls) >= rpm:
             wait = max(0.0, 61 - (now - calls[0]))
             logger.info("Limite local de requisições: aguardando %.0fs", wait)
-            time.sleep(wait)
+            self._telemetry_sleep(wait)
             now = time.monotonic()
             while calls and now - calls[0] >= 60:
                 calls.popleft()
@@ -358,11 +359,20 @@ class Node3RequirementAnalyzer:
             # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             logger.info("Cota de tokens insuficiente (%s < ~%s); aguardando %.0fs",
                         remaining, estimated, wait)
-            time.sleep(wait)
+            self._telemetry_sleep(wait)
             quota["tokens_remaining"] = quota.get("tokens_limit", estimated)
         calls.append(time.monotonic())
 
+    def _telemetry_sleep(self, seconds):
+        with telemetry.stage("llm.wait", provider="groq"):
+            time.sleep(seconds)
+        telemetry.quota_wait("groq", seconds)
+
     def _invoke_groq(self, messages: list):
+        with telemetry.stage("llm.request", provider="groq", model=getattr(self, "model_name", "unknown")):
+            return self._invoke_groq_raw(messages)
+
+    def _invoke_groq_raw(self, messages: list):
         """Lê os headers sem fazer uma segunda chamada só para consultar cotas."""
         client = getattr(self.llm, "client", None)
         raw_client = getattr(client, "with_raw_response", None)
@@ -381,6 +391,10 @@ class Node3RequirementAnalyzer:
         )
         self._record_quota(raw.headers)
         completion = raw.parse()
+        usage = getattr(completion, "usage", None)
+        if usage is not None:
+            telemetry.llm_usage("groq", getattr(usage, "prompt_tokens", None),
+                                getattr(usage, "completion_tokens", None))
         choice = completion.choices[0]
         if getattr(choice, "finish_reason", None) == "length":
             raise GroqOutputTruncated(
@@ -506,7 +520,7 @@ class Node3RequirementAnalyzer:
                             failures_by_account[self._current_key_idx] = rate_limit_failures
                             self._save_account()["cooldown_until"] = time.monotonic() + wait_secs
                         else:
-                            time.sleep(wait_secs)
+                            self._telemetry_sleep(wait_secs)
                         continue
                 else:
                     status = getattr(e, "status_code", None)
@@ -526,7 +540,7 @@ class Node3RequirementAnalyzer:
                             "Falha temporária da Groq (%s). Tentativa adicional %s/3 em %ss",
                             status or type(e).__name__, transient_failures, delay,
                         )
-                        time.sleep(delay)
+                        self._telemetry_sleep(delay)
                         continue
                     raise
 
@@ -1623,7 +1637,7 @@ Regras:
                     "dela. Não transforme regra condicional em incondicional. "
                     "Não altere nem invente números de página."
                 )
-                time.sleep(8)
+                self._telemetry_sleep(8)
         if last_parsed is not None:
             last_parsed["_unverified_rules"] = list(pending.values())
             if pending:
@@ -2140,7 +2154,7 @@ Regras:
                             stage="Explicando todos os requisitos",
                             query_atual=f"{topic}: repetindo IDs {[entry['id'] for entry in missing]} ({attempt + 1}/3)",
                         )
-                    time.sleep(8)
+                    self._telemetry_sleep(8)
                 prompt = (
                     "Explique TODOS os itens abaixo, um por um, em português simples para quem "
                     "nunca participou de uma licitação. Para cada ID, escreva até 2 frases "
@@ -2268,7 +2282,7 @@ Regras:
                 )
             explained[topic].extend([explanations_by_id[entry["id"]] for entry in batch])
             if invoked_this_task and task_index < len(tasks):
-                time.sleep(8)
+                self._telemetry_sleep(8)
 
         for topic, items in topics.items():
             if len(explained[topic]) != len(items):
@@ -2402,7 +2416,7 @@ Regras:
                 ) from e
 
             if b_idx + 1 < total:
-                time.sleep(SLEEP_BETWEEN)
+                self._telemetry_sleep(SLEEP_BETWEEN)
 
         agg["nivel_risco"] = max_risk
 
@@ -2749,3 +2763,4 @@ Regras:
 
         logger.info("Validação de integração concluída")
         return True
+

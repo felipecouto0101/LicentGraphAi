@@ -8,6 +8,8 @@ import threading
 import time
 from collections import deque
 
+from app import telemetry
+
 logger = logging.getLogger(__name__)
 _states = {}
 _lock = threading.Lock()
@@ -97,7 +99,10 @@ class GeminiTopicClient:
                                    'Subtemas validados preservados na sessão.')
             self.progress(activity='waiting', activity_message='Aguardando a próxima janela de cota do Gemini.',
                           wait_until=time.time() + wait)
-            time.sleep(min(wait, 30))
+            seconds = min(wait, 30)
+            with telemetry.stage("llm.wait", provider="gemini"):
+                time.sleep(seconds)
+            telemetry.quota_wait("gemini", seconds)
         self._event('requesting', 'Gemini está identificando e organizando os assuntos.',
                     local_requests_remaining=remaining, provider='gemini', model=self.model)
         return reservation
@@ -177,7 +182,8 @@ class GeminiTopicClient:
         for attempt in range(4):
             reservation = self._reserve(estimated)
             try:
-                result = self._invoke_model(system, text, schema)
+                with telemetry.stage("llm.request", provider="gemini", model=self.model):
+                    result = self._invoke_model(system, text, schema)
             except Exception as error:
                 exc = self._api_error(error)
                 if exc is None:
@@ -201,6 +207,7 @@ class GeminiTopicClient:
                 self._event('retrying', f'Gemini indisponível; nova tentativa {attempt + 1}/3.', retry=attempt + 1)
                 continue
             usage = result.usage_metadata or {}
+            telemetry.llm_usage("gemini", usage.get("input_tokens"), usage.get("output_tokens"))
             actual = usage.get('input_tokens')
             if isinstance(actual, int) and actual > 0:
                 with _lock:
@@ -227,3 +234,4 @@ class GeminiTopicClient:
                 raise ValueError('Gemini deve retornar um objeto JSON.')
             logger.info('Gemini: modelo=%s, entrada=%s, saída=%s', self.model, actual, usage.get('output_tokens'))
             return parsed
+
