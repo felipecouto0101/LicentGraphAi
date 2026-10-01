@@ -88,6 +88,10 @@ Ambos os provedores usam LangChain. O cliente Gemini mantém controle local de c
 
 O inicializador abre API e interface sem aguardar o backend ficar pronto. A tela inicial aparece sem aguardar a API: a conexão é verificada em background, com resultado reutilizado por 15 segundos. Conexão e progresso são atualizados por fragmentos do Streamlit; temas fechados e fontes ainda não abertas não renderizam seu conteúdo. Logs `ui_render` e `ui_api_health` registram tempos no servidor. Requer Streamlit 1.58 ou superior; atualize as dependências e reinicie a interface.
 
+### Inicialização do backend
+
+A API carrega apenas configuração e rotas ao iniciar. O pipeline LangGraph é importado no worker da análise completa; leitores e clientes de IA são carregados quando o respectivo job precisa deles. `/status` funciona sem carregar modelos ou processar PDFs. O primeiro uso de cada componente ainda paga seu custo de carregamento. Os logs `api_startup` e `api_full_pipeline_import` mostram essas durações no servidor.
+
 ## API e armazenamento
 
 | Endpoint | Função |
@@ -118,6 +122,7 @@ python -m unittest discover -s tests -p 'test_gemini*.py' -v
 python -m unittest discover -s tests -p 'test_source*.py' -v
 python -m unittest discover -s tests -p 'test_pdf_tables.py' -v
 python -m unittest discover -s tests -p 'test_ui_runtime.py' -v
+python -m unittest discover -s tests -p 'test_api_startup.py' -v
 ```
 
 Os testes cobrem referências, agrupamento, cache, resultados parciais, cotas, retries, contexto original, tabelas e continuações entre páginas.
