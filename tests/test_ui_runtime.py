@@ -86,11 +86,23 @@ class StreamlitRuntimeTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertTrue(any(s.value == 'Inscrição' for s in app.subheader))
         self.assertFalse(any('SOURCE_MARKER' in s.value for s in app.markdown))
-        app.session_state['sources:job:Participação:0'] = True
+        app.session_state['sources:job:0:0'] = True
         with patch('app.ui_health.check_api', return_value={'state': 'online', 'status': {'ready': True}}):
             app.run(timeout=4)
         self.assertFalse(app.exception)
         self.assertTrue(any('SOURCE_MARKER' in s.value for s in app.markdown))
+
+    def test_repeated_theme_titles_do_not_collide(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_file(str(Path(__file__).parents[1] / 'app/streamlit_app.py'))
+        app.session_state['job_id'] = 'job'
+        app.session_state['result'] = {'map_version': 4, 'organization_status': 'done',
+            'topic_map': [{'title': 'Regras', 'subtopics': [{'title': 'Assunto', 'pages': [1], 'evidence': []}]},
+                          {'title': 'Regras', 'subtopics': [{'title': 'Outro assunto', 'pages': [2], 'evidence': []}]}]}
+        with patch('app.ui_health.check_api', return_value={'state': 'online', 'status': {'ready': True}}):
+            app.run(timeout=4)
+        self.assertFalse(app.exception)
+        self.assertFalse(any(s.value == 'Outro assunto' for s in app.subheader))
 
 
 class LauncherTests(unittest.TestCase):
